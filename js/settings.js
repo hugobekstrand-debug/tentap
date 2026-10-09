@@ -7,7 +7,10 @@ import { forgetExam } from './pdf.js';
 import { runExport, runImport } from './backup.js';
 import { applyTheme } from './theme.js';
 import { APP_VERSION } from './version.js';
-import { h, icon, navigate, confirmDialog, toast, fmtBytes, fmtDate, relativeDays } from './ui.js';
+import { h, icon, badge, navigate, confirmDialog, toast, fmtBytes, fmtDate, relativeDays } from './ui.js';
+import { getApiKey, maskKey, keyForm, openPremium, KEY_ID } from './premium.js';
+import { testKey, AiError } from './ai.js';
+import { MODELLER } from './models.js';
 
 export async function renderSettings(root) {
   const view = h('div', { class: 'view view-settings' });
@@ -15,18 +18,19 @@ export async function renderSettings(root) {
   let destroyed = false;
 
   async function refresh() {
-    const [settings, storage, counts] = await Promise.all([db.getSettings(), db.storageInfo(), db.counts()]);
+    const [settings, storage, counts, apiKey] = await Promise.all([db.getSettings(), db.storageInfo(), db.counts(), getApiKey()]);
     if (destroyed) return;
     const focusKey = document.activeElement?.dataset?.focusKey;
     view.replaceChildren(
       h(
         'header',
         { class: 'page-header' },
-        h('button', { type: 'button', class: 'btn-icon btn-quiet', 'aria-label': 'Tillbaka till biblioteket', onclick: () => navigate('#/') }, icon('back')),
+        h('button', { type: 'button', class: 'btn-icon btn-quiet', 'aria-label': 'Tillbaka till startsidan', onclick: () => navigate('#/') }, icon('back')),
         h('h1', { class: 'page-title', tabindex: '-1' }, 'Inställningar'),
       ),
       appearance(settings),
       studySection(settings),
+      premiumSection(settings, apiKey),
       backupSection(settings, counts),
       storageSection(storage),
       dangerSection(counts),
@@ -131,6 +135,117 @@ export async function renderSettings(root) {
           'Ordning',
         ),
       ),
+      row(
+        'Dagsmål',
+        'Hur många uppgifter du vill bli klar med per dag. Visas på startsidan.',
+        segmented(
+          'dagsmal',
+          [
+            [3, '3'],
+            [5, '5'],
+            [10, '10'],
+          ],
+          settings.dagsmal,
+          (v) => db.saveSettings({ dagsmal: v }),
+          'Dagsmål',
+        ),
+      ),
+    );
+  }
+
+  function premiumSection(settings, apiKey) {
+    const children = [
+      h(
+        'p',
+        { class: 'settings-desc' },
+        'Låt AI hitta uppgifter när textigenkänningen inte räcker, t.ex. i inskannade PDF:er. Du använder din egen API-nyckel från Anthropic. Tentans PDF skickas bara när du själv startar en analys.',
+      ),
+    ];
+    if (apiKey) {
+      const status = h('p', { class: 'status-line status-line--ok', 'aria-live': 'polite' }, icon('key', { size: 18 }), `Nyckel sparad (${maskKey(apiKey)})`);
+      const testBtn = h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn btn-secondary',
+          'data-focus-key': 'key-test',
+          onclick: async () => {
+            testBtn.classList.add('is-loading');
+            testBtn.setAttribute('aria-busy', 'true');
+            try {
+              const info = await testKey(apiKey, settings.modell);
+              status.className = 'status-line status-line--ok';
+              status.replaceChildren(icon('check', { size: 18 }), `Nyckeln fungerar (${info.modell}).`);
+            } catch (err) {
+              status.className = 'status-line status-line--error';
+              status.replaceChildren(icon('alert', { size: 18 }), err instanceof AiError ? err.message : 'Nyckeln kunde inte testas. Försök igen.');
+            } finally {
+              testBtn.classList.remove('is-loading');
+              testBtn.removeAttribute('aria-busy');
+            }
+          },
+        },
+        'Testa nyckeln',
+      );
+      children.push(
+        status,
+        h(
+          'div',
+          { class: 'button-row' },
+          testBtn,
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn btn-danger-outline',
+              'data-focus-key': 'key-remove',
+              onclick: async () => {
+                const ok = await confirmDialog({
+                  title: 'Ta bort API-nyckeln?',
+                  message: 'AI-igenkänningen slutar fungera tills du lägger in en nyckel igen. Sparade AI-resultat och dina uppgifter finns kvar.',
+                  confirmLabel: 'Ta bort nyckeln',
+                  danger: true,
+                });
+                if (!ok) return;
+                await db.deleteSecret(KEY_ID);
+                toast('API-nyckeln är borttagen från enheten.');
+              },
+            },
+            'Ta bort nyckeln',
+          ),
+        ),
+      );
+    } else {
+      children.push(
+        keyForm({ onSaved: () => toast('API-nyckeln är sparad. Premium är upplåst.', { tone: 'ok' }) }),
+        h('button', { type: 'button', class: 'link-btn', onclick: () => openPremium() }, 'Hur skaffar jag en nyckel?'),
+      );
+    }
+    const modelGroup = h(
+      'div',
+      { class: 'radio-list', role: 'radiogroup', 'aria-labelledby': 'model-label' },
+      MODELLER.map((m) =>
+        h(
+          'label',
+          { class: 'radio-row' },
+          h('input', {
+            type: 'radio',
+            name: 'modell',
+            value: m.id,
+            checked: settings.modell === m.id || null,
+            'data-focus-key': `model-${m.id}`,
+            onchange: () => db.saveSettings({ modell: m.id }),
+          }),
+          h('span', null, h('span', { class: 'radio-title' }, m.namn), h('span', { class: 'radio-desc' }, m.beskrivning)),
+        ),
+      ),
+    );
+    children.push(h('p', { class: 'settings-label', id: 'model-label' }, 'Modell'), modelGroup);
+    return h(
+      'section',
+      { class: 'card settings-section' },
+      h('div', { class: 'section-head' }, h('h2', { class: 'section-title' }, 'AI-igenkänning'), badge('Premium', { tone: 'premium', iconName: 'sparkles' })),
+      children,
     );
   }
 
@@ -213,7 +328,7 @@ export async function renderSettings(root) {
       'Avancerat',
       row(
         'Radera all data',
-        'Tar bort alla tentor, markeringar och framsteg från den här enheten.',
+        'Tar bort alla tentor, markeringar, framsteg och en sparad API-nyckel från den här enheten.',
         h(
           'button',
           {
@@ -225,7 +340,7 @@ export async function renderSettings(root) {
               const ok = await confirmDialog({
                 title: 'Radera all data?',
                 message: [
-                  `${counts.exams} tentor och ${counts.tasks} uppgifter tas bort från den här enheten, inklusive framsteg. Det går inte att ångra.`,
+                  `${counts.exams} tentor och ${counts.tasks} uppgifter tas bort från den här enheten, inklusive framsteg och en sparad API-nyckel. Det går inte att ångra.`,
                   'Exportera en säkerhetskopia först om du vill kunna återställa.',
                 ],
                 confirmLabel: 'Radera allt',
@@ -249,12 +364,12 @@ export async function renderSettings(root) {
       'section',
       { class: 'settings-about' },
       h('p', null, `Tentaplugget ${APP_VERSION}`),
-      h('p', null, 'Inga konton, ingen spårning. Inga data lämnar din enhet.'),
+      h('p', null, 'Inga konton, ingen spårning. Inget lämnar din enhet – utom tentans PDF när du själv startar en AI-analys.'),
     );
   }
 
   const off = db.onChange((d) => {
-    if (d.type === 'settings' || d.type === 'import' || d.type === 'exams') refresh();
+    if (['settings', 'import', 'exams', 'secrets'].includes(d.type)) refresh();
   });
   await refresh();
   view.querySelector('h1')?.focus({ preventScroll: true });

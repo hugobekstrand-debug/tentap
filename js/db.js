@@ -6,13 +6,26 @@
  * delar samma origin och därmed samma IndexedDB-namnrymd.
  *
  * Object stores (DB-version = SCHEMA_VERSION):
- *   exams  { id, namn, antalSidor, sidor:[{w,h}], skapad, andrad, filnamn, storlek }
- *   pdfs   { examId, data:ArrayBuffer, typ }            -- själva PDF-filen
- *   tasks  { id, examId, etikett, poang, ordning, regions, solutionRegions,
- *            status, klarTidpunkt, antalForsok, svarAntal, anteckning,
- *            skapad, andrad }                           -- index: examId
- *   log    { id, taskId, examId, at, dag }              -- "klar"-händelser (idag/streak)
- *   kv     { key, value }                               -- settings, schemaVersion
+ *   exams     { id, namn, antalSidor, sidor:[{w,h}], skapad, andrad, filnamn, storlek,
+ *               extraktion, foregaendeUppgifter, facitPdf }          (v2: de tre sista)
+ *   pdfs      { examId, data:ArrayBuffer, typ }       -- själva PDF-filen
+ *   facitpdfs { examId, data:ArrayBuffer, typ }       -- valfri separat facit-PDF (v2)
+ *   tasks     { id, examId, etikett, poang, ordning, regions, solutionRegions,
+ *               status, klarTidpunkt, antalForsok, svarAntal, anteckning,
+ *               delmoment, kalla, sakerhet, anmarkningar,           (v2: de fyra sista)
+ *               skapad, andrad }                      -- index: examId
+ *   log       { id, taskId, examId, at, dag }         -- "klar"-händelser (idag/streak)
+ *   kv        { key, value }                          -- settings, schemaVersion
+ *   secrets   { key, value }                          -- API-nyckel (v2). Läses ALDRIG av
+ *                                                        export, finns aldrig i koden.
+ *
+ * Tentans extraktion (v2):
+ *   extraktion { metod: "text"|"ai"|"manuell"|"ingen", tidpunkt, godkand,
+ *                sammanfattning: { antal, summaPoang, angivenTotalpoang, varningar[] },
+ *                rasvar: { modell, medFacit, tidpunkt, svar } }  -- cachat AI-svar
+ *   foregaendeUppgifter { tidpunkt, extraktion, uppgifter[] }    -- ögonblicksbild för Ångra
+ *   facitPdf { filnamn, storlek, antalSidor, sidor[] }           -- metadata; datan i facitpdfs
+ * Regioner i en separat facit-PDF har fältet pdf: "facit".
  *
  * Fältnamn följer specens svenska datamodell, translittererade till ASCII
  * (poäng -> poang, antalFörsök -> antalForsok). Statusvärdena är exakt
@@ -22,20 +35,27 @@
  * store i stället för som Blob på tentan. Blobbar i IndexedDB har historiskt
  * gått sönder i Safari/iOS ("WebKitBlobResource error"), och ArrayBuffer är
  * det mest robusta valet. Tentalistan behöver då inte heller läsa in
- * PDF-datan.
+ * PDF-datan. Samma sak gäller den separata facit-PDF:en (specens
+ * "facitPdfBlob"), som ligger i storen facitpdfs.
  *
  * Alla skrivningar som hör ihop görs i EN transaktion, så att ett avbrott
  * (stängd flik, fullt lagringsutrymme) aldrig lämnar halvskriven data.
  */
 
+import { STANDARD_MODELL } from './models.js';
+
 export const DB_NAME = 'tentaplugget-v1';
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const STATUS = Object.freeze({
   EJ_GJORD: 'ej_gjord',
   KLAR: 'klar',
   SVAR: 'svår',
 });
+
+export const SAKERHET = Object.freeze({ HOG: 'hög', LAG: 'låg', MANUELL: 'manuell' });
+export const KALLA = Object.freeze({ TEXT: 'text', AI: 'ai', MANUELL: 'manuell' });
+export const METOD = Object.freeze({ TEXT: 'text', AI: 'ai', MANUELL: 'manuell', INGEN: 'ingen' });
 
 export const DEFAULT_SETTINGS = Object.freeze({
   viktaEfterPoang: false,
@@ -45,6 +65,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   senasteExport: null, // ISO-datum
   tema: 'system', // "system" | "ljust" | "mörkt"
   backupPaminnelseDoldTill: null, // ISO-datum
+  modell: STANDARD_MODELL, // Claude-modell för AI-igenkänning (Premium)
+  dagsmal: 3, // uppgifter per dag ("Idag 2 av 3")
 });
 
 /* ------------------------------------------------------------------ */
@@ -127,7 +149,55 @@ const MIGRATIONS = {
     db.createObjectStore('log', { keyPath: 'id' });
     db.createObjectStore('kv', { keyPath: 'key' });
   },
+  /**
+   * v2: textigenkänning, AI (Premium) och separat facit-PDF.
+   * Nya stores för hemligheter och facit-PDF:er. Befintliga tentor och
+   * uppgifter får standardvärden: de är markerade för hand, så metod och
+   * källa blir "manuell". Inget tas bort eller skrivs över.
+   */
+  2(db, tx) {
+    if (!db.objectStoreNames.contains('secrets')) db.createObjectStore('secrets', { keyPath: 'key' });
+    if (!db.objectStoreNames.contains('facitpdfs')) db.createObjectStore('facitpdfs', { keyPath: 'examId' });
+    const withTasks = new Set();
+    const tasks = tx.objectStore('tasks');
+    tasks.openCursor().onsuccess = (ev) => {
+      const cur = ev.target.result;
+      if (!cur) {
+        migrateExamsV2(tx, withTasks);
+        return;
+      }
+      const t = cur.value;
+      withTasks.add(t.examId);
+      cur.update({
+        ...t,
+        delmoment: Array.isArray(t.delmoment) ? t.delmoment : [],
+        kalla: t.kalla || KALLA.MANUELL,
+        sakerhet: t.sakerhet || SAKERHET.MANUELL,
+        anmarkningar: Array.isArray(t.anmarkningar) ? t.anmarkningar : [],
+      });
+      cur.continue();
+    };
+  },
 };
+
+function migrateExamsV2(tx, withTasks) {
+  tx.objectStore('exams').openCursor().onsuccess = (ev) => {
+    const cur = ev.target.result;
+    if (!cur) return;
+    const e = cur.value;
+    cur.update({
+      ...e,
+      extraktion: e.extraktion || defaultExtraktion(withTasks.has(e.id) ? METOD.MANUELL : METOD.INGEN),
+      foregaendeUppgifter: e.foregaendeUppgifter ?? null,
+      facitPdf: e.facitPdf ?? null,
+    });
+    cur.continue();
+  };
+}
+
+export function defaultExtraktion(metod = METOD.INGEN) {
+  return { metod, tidpunkt: null, godkand: null, sammanfattning: null, rasvar: null };
+}
 
 let dbPromise = null;
 
@@ -258,30 +328,48 @@ export function dayKey(date = new Date()) {
 
 const clamp01 = (n) => Math.min(1, Math.max(0, n));
 
-/** Validerar och normaliserar en region. Returnerar null om den är ogiltig. */
-export function normalizeRegion(r, antalSidor = Infinity) {
+/**
+ * Validerar och normaliserar en region. Returnerar null om den är ogiltig.
+ * Regioner i en separat facit-PDF har pdf: "facit" och valideras mot den
+ * PDF:ens sidantal (facitSidor).
+ */
+export function normalizeRegion(r, antalSidor = Infinity, facitSidor = Infinity) {
   if (!r || typeof r !== 'object') return null;
   const sida = Number(r.sida);
+  const isFacit = r.pdf === 'facit';
   let { x, y, w, h } = r;
   if (![x, y, w, h].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
-  if (!Number.isInteger(sida) || sida < 1 || sida > antalSidor) return null;
+  if (!Number.isInteger(sida) || sida < 1 || sida > (isFacit ? facitSidor : antalSidor)) return null;
   x = clamp01(x);
   y = clamp01(y);
   w = Math.min(clamp01(w), 1 - x);
   h = Math.min(clamp01(h), 1 - y);
   if (w <= 0.001 || h <= 0.001) return null;
-  return { sida, x, y, w, h };
+  return isFacit ? { sida, x, y, w, h, pdf: 'facit' } : { sida, x, y, w, h };
 }
 
+/** Poäng: positivt tal (halvpoäng som "1,5" går bra), annars null. */
 export function normalizePoang(v) {
   if (v === null || v === undefined || v === '') return null;
-  const n = typeof v === 'number' ? v : parseInt(String(v).trim(), 10);
-  if (!Number.isInteger(n) || n < 1 || n > 1000) return null;
-  return n;
+  const n = typeof v === 'number' ? v : Number(String(v).trim().replace(',', '.'));
+  if (!Number.isFinite(n) || n <= 0 || n > 1000) return null;
+  return Math.round(n * 100) / 100;
 }
 
+function normalizeDelmoment(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((d) => d && typeof d === 'object')
+    .map((d) => ({ etikett: String(d.etikett ?? '').slice(0, 20), poang: normalizePoang(d.poang) }))
+    .filter((d) => d.etikett)
+    .slice(0, 26);
+}
+
+const SAKERHET_VALUES = Object.values(SAKERHET);
+const KALLA_VALUES = Object.values(KALLA);
+
 /** Fyller i standardvärden så att äldre/importerade uppgifter alltid har alla fält. */
-export function normalizeTask(t, antalSidor = Infinity) {
+export function normalizeTask(t, antalSidor = Infinity, facitSidor = Infinity) {
   const status = Object.values(STATUS).includes(t.status) ? t.status : STATUS.EJ_GJORD;
   return {
     id: String(t.id),
@@ -290,23 +378,42 @@ export function normalizeTask(t, antalSidor = Infinity) {
     poang: normalizePoang(t.poang),
     ordning: Number.isFinite(t.ordning) ? t.ordning : 0,
     regions: (Array.isArray(t.regions) ? t.regions : [])
+      .filter((r) => r?.pdf !== 'facit')
       .map((r) => normalizeRegion(r, antalSidor))
       .filter(Boolean),
     solutionRegions: (Array.isArray(t.solutionRegions) ? t.solutionRegions : [])
-      .map((r) => normalizeRegion(r, antalSidor))
+      .map((r) => normalizeRegion(r, antalSidor, facitSidor))
       .filter(Boolean),
     status,
     klarTidpunkt: status === STATUS.KLAR ? t.klarTidpunkt || null : null,
     antalForsok: Number.isInteger(t.antalForsok) && t.antalForsok >= 0 ? t.antalForsok : 0,
     svarAntal: Number.isInteger(t.svarAntal) && t.svarAntal >= 0 ? t.svarAntal : 0,
     anteckning: typeof t.anteckning === 'string' ? t.anteckning : '',
+    delmoment: normalizeDelmoment(t.delmoment),
+    kalla: KALLA_VALUES.includes(t.kalla) ? t.kalla : KALLA.MANUELL,
+    sakerhet: SAKERHET_VALUES.includes(t.sakerhet) ? t.sakerhet : SAKERHET.MANUELL,
+    anmarkningar: Array.isArray(t.anmarkningar) ? t.anmarkningar.filter((a) => typeof a === 'string').slice(0, 10) : [],
     skapad: t.skapad || nowIso(),
     andrad: t.andrad || t.skapad || nowIso(),
   };
 }
 
 /** Fält som bara pluggläget ändrar. Markeringsläget skriver aldrig över dem. */
-const PROGRESS_FIELDS = ['status', 'klarTidpunkt', 'antalForsok', 'svarAntal', 'anteckning'];
+export const PROGRESS_FIELDS = ['status', 'klarTidpunkt', 'antalForsok', 'svarAntal', 'anteckning'];
+
+/** Fyller i standardvärden för tentans v2-fält (äldre data, import). */
+export function normalizeExam(e) {
+  if (!e) return e;
+  const ex = e.extraktion && typeof e.extraktion === 'object' ? e.extraktion : null;
+  const metod = ex && Object.values(METOD).includes(ex.metod) ? ex.metod : METOD.INGEN;
+  return {
+    ...e,
+    extraktion: { ...defaultExtraktion(metod), ...(ex || {}), metod },
+    foregaendeUppgifter: e.foregaendeUppgifter && Array.isArray(e.foregaendeUppgifter.uppgifter) ? e.foregaendeUppgifter : null,
+    facitPdf:
+      e.facitPdf && Number.isInteger(e.facitPdf.antalSidor) && Array.isArray(e.facitPdf.sidor) ? e.facitPdf : null,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Tentor                                                              */
@@ -314,16 +421,16 @@ const PROGRESS_FIELDS = ['status', 'klarTidpunkt', 'antalForsok', 'svarAntal', '
 
 export async function listExams() {
   const exams = await tx(['exams'], 'readonly', (t) => reqP(t.objectStore('exams').getAll()));
-  return exams.sort((a, b) => String(a.skapad).localeCompare(String(b.skapad)));
+  return exams.map(normalizeExam).sort((a, b) => String(a.skapad).localeCompare(String(b.skapad)));
 }
 
-export function getExam(id) {
-  return tx(['exams'], 'readonly', (t) => reqP(t.objectStore('exams').get(id)));
+export async function getExam(id) {
+  return normalizeExam(await tx(['exams'], 'readonly', (t) => reqP(t.objectStore('exams').get(id))));
 }
 
 /** Sparar tenta + PDF atomiskt: antingen finns båda, eller ingen av dem. */
 export async function addExam(exam, data) {
-  const record = { ...exam, skapad: exam.skapad || nowIso(), andrad: nowIso() };
+  const record = normalizeExam({ ...exam, skapad: exam.skapad || nowIso(), andrad: nowIso() });
   await tx(['exams', 'pdfs'], 'readwrite', (t) => {
     t.objectStore('exams').put(record);
     t.objectStore('pdfs').put({ examId: record.id, data, typ: 'application/pdf' });
@@ -345,11 +452,12 @@ export async function updateExam(id, patch) {
   return updated;
 }
 
-/** Tar bort tenta, PDF och uppgifter. Logghistoriken (streak) behålls. */
+/** Tar bort tenta, PDF:er och uppgifter. Logghistoriken (streak) behålls. */
 export async function deleteExam(id) {
-  await tx(['exams', 'pdfs', 'tasks'], 'readwrite', async (t) => {
+  await tx(['exams', 'pdfs', 'facitpdfs', 'tasks'], 'readwrite', async (t) => {
     t.objectStore('exams').delete(id);
     t.objectStore('pdfs').delete(id);
+    t.objectStore('facitpdfs').delete(id);
     const tasks = t.objectStore('tasks');
     const keys = await reqP(tasks.index('examId').getAllKeys(id));
     for (const k of keys) tasks.delete(k);
@@ -357,13 +465,47 @@ export async function deleteExam(id) {
   emit({ type: 'exams' });
 }
 
-export async function getPdfData(examId) {
-  const rec = await tx(['pdfs'], 'readonly', (t) => reqP(t.objectStore('pdfs').get(examId)));
+/** @param {'tenta'|'facit'} which vilken PDF (tentan eller den separata facit-PDF:en) */
+export async function getPdfData(examId, which = 'tenta') {
+  const store = which === 'facit' ? 'facitpdfs' : 'pdfs';
+  const rec = await tx([store], 'readonly', (t) => reqP(t.objectStore(store).get(examId)));
   if (!rec) return null;
   // Äldre/andra webbläsare kan ha lagrat Blob — hantera båda.
   if (rec.data instanceof ArrayBuffer) return rec.data;
   if (rec.data && typeof rec.data.arrayBuffer === 'function') return rec.data.arrayBuffer();
   return null;
+}
+
+/** Sparar en separat facit-PDF till tentan (ersätter en tidigare). */
+export async function setFacitPdf(examId, data, meta) {
+  const updated = await tx(['exams', 'facitpdfs'], 'readwrite', async (t) => {
+    const store = t.objectStore('exams');
+    const exam = await reqP(store.get(examId));
+    if (!exam) throw new Error('Tentan finns inte längre.');
+    const next = { ...exam, facitPdf: meta, andrad: nowIso() };
+    store.put(next);
+    t.objectStore('facitpdfs').put({ examId, data, typ: 'application/pdf' });
+    return next;
+  });
+  emit({ type: 'exams' });
+  return normalizeExam(updated);
+}
+
+/** Tar bort den separata facit-PDF:en och facitområden som pekar in i den. */
+export async function removeFacitPdf(examId) {
+  await tx(['exams', 'facitpdfs', 'tasks'], 'readwrite', async (t) => {
+    const store = t.objectStore('exams');
+    const exam = await reqP(store.get(examId));
+    if (exam) store.put({ ...exam, facitPdf: null, andrad: nowIso() });
+    t.objectStore('facitpdfs').delete(examId);
+    const tasks = t.objectStore('tasks');
+    for (const task of await reqP(tasks.index('examId').getAll(examId))) {
+      const sol = (task.solutionRegions || []).filter((r) => r.pdf !== 'facit');
+      if (sol.length !== (task.solutionRegions || []).length) tasks.put({ ...task, solutionRegions: sol, andrad: nowIso() });
+    }
+  });
+  emit({ type: 'exams' });
+  emit({ type: 'tasks', examId });
 }
 
 /* ------------------------------------------------------------------ */
@@ -450,6 +592,125 @@ export async function resetProgress(examIds) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Igenkänning: ersätt uppgifter med Ångra                              */
+/* ------------------------------------------------------------------ */
+
+/** Jämförbar etikett: "Problem 3", "Uppgift 3" och "3." matchar varandra. */
+export function labelKey(etikett) {
+  const s = String(etikett || '').normalize('NFC').toLowerCase();
+  const m = s.match(/(\d+)\s*([a-h])?\b/);
+  return m ? `${m[1]}${m[2] || ''}` : s.replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/**
+ * Ersätter tentans uppgifter med ett igenkänningsresultat, i EN transaktion.
+ * - Uppgifter som matchar en befintlig på etikett behåller dess id, status
+ *   och framsteg (så att logg/streak och "fortsätt där du var" fungerar).
+ * - Den tidigare uppsättningen sparas i exam.foregaendeUppgifter (Ångra).
+ * @returns {{exam:object, tasks:object[], preserved:number}}
+ */
+export async function applyExtraction(examId, newTasks, extraktion) {
+  let preserved = 0;
+  const result = await tx(['exams', 'tasks'], 'readwrite', async (t) => {
+    const exams = t.objectStore('exams');
+    const store = t.objectStore('tasks');
+    const exam = await reqP(exams.get(examId));
+    if (!exam) throw new Error('Tentan finns inte längre.');
+    const existing = (await reqP(store.index('examId').getAll(examId))).sort((a, b) => a.ordning - b.ordning);
+    const byKey = new Map();
+    for (const old of existing) {
+      const k = labelKey(old.etikett);
+      if (!byKey.has(k)) byKey.set(k, old);
+    }
+    const used = new Set();
+    const now = nowIso();
+    const out = newTasks.map((task, i) => {
+      const old = byKey.get(labelKey(task.etikett));
+      const rec = { ...task, examId, ordning: i, skapad: task.skapad || now, andrad: now };
+      if (old && !used.has(old.id)) {
+        used.add(old.id);
+        rec.id = old.id;
+        rec.skapad = old.skapad || rec.skapad;
+        for (const f of PROGRESS_FIELDS) if (f in old) rec[f] = old[f];
+        if (old.status && old.status !== STATUS.EJ_GJORD) preserved++;
+      }
+      return rec;
+    });
+    for (const old of existing) store.delete(old.id);
+    for (const rec of out) store.put(rec);
+    const prev = normalizeExam(exam);
+    const next = {
+      ...exam,
+      extraktion: {
+        ...extraktion,
+        // Det cachade AI-svaret följer med, så att samma tenta aldrig faktureras två gånger.
+        rasvar: extraktion.rasvar ?? prev.extraktion.rasvar ?? null,
+      },
+      // Ögonblicksbild för Ångra (bara om det fanns något att ångra till).
+      foregaendeUppgifter: existing.length ? { tidpunkt: now, extraktion: { ...prev.extraktion, rasvar: null }, uppgifter: existing } : null,
+      andrad: now,
+    };
+    exams.put(next);
+    return { exam: normalizeExam(next), tasks: out.map((x) => normalizeTask(x)) };
+  });
+  emit({ type: 'tasks', examId });
+  emit({ type: 'exams' });
+  return { ...result, preserved };
+}
+
+/** Ångra: återställ uppgifterna från ögonblicksbilden före senaste omanalys. */
+export async function undoExtraction(examId) {
+  await tx(['exams', 'tasks'], 'readwrite', async (t) => {
+    const exams = t.objectStore('exams');
+    const store = t.objectStore('tasks');
+    const exam = normalizeExam(await reqP(exams.get(examId)));
+    const snap = exam?.foregaendeUppgifter;
+    if (!snap) throw new Error('Det finns inget att ångra.');
+    const current = await reqP(store.index('examId').getAll(examId));
+    const currentById = new Map(current.map((x) => [x.id, x]));
+    for (const c of current) store.delete(c.id);
+    for (const old of snap.uppgifter) {
+      // Framsteg som gjorts sedan omanalysen (samma id) följer med tillbaka.
+      const now = currentById.get(old.id);
+      const rec = { ...old };
+      if (now) for (const f of PROGRESS_FIELDS) if (f in now) rec[f] = now[f];
+      store.put(rec);
+    }
+    exams.put({
+      ...exam,
+      extraktion: { ...snap.extraktion, rasvar: exam.extraktion.rasvar },
+      foregaendeUppgifter: null,
+      andrad: nowIso(),
+    });
+  });
+  emit({ type: 'tasks', examId });
+  emit({ type: 'exams' });
+}
+
+/* ------------------------------------------------------------------ */
+/* Hemligheter (API-nyckel). Egen store, aldrig i export.               */
+/* ------------------------------------------------------------------ */
+
+export async function getSecret(key) {
+  const rec = await tx(['secrets'], 'readonly', (t) => reqP(t.objectStore('secrets').get(key)));
+  return rec?.value ?? null;
+}
+
+export async function setSecret(key, value) {
+  await tx(['secrets'], 'readwrite', (t) => {
+    t.objectStore('secrets').put({ key, value });
+  });
+  emit({ type: 'secrets' });
+}
+
+export async function deleteSecret(key) {
+  await tx(['secrets'], 'readwrite', (t) => {
+    t.objectStore('secrets').delete(key);
+  });
+  emit({ type: 'secrets' });
+}
+
+/* ------------------------------------------------------------------ */
 /* Logg (för "idag" och streak)                                        */
 /* ------------------------------------------------------------------ */
 
@@ -522,7 +783,10 @@ export async function saveSettings(patch) {
 /* Export / import / rensa                                             */
 /* ------------------------------------------------------------------ */
 
-/** Allt utom PDF-datan (som läses en i taget vid export för att spara minne). */
+/**
+ * Allt utom PDF-datan (som läses en i taget vid export för att spara minne).
+ * Storen "secrets" läses medvetet INTE: API-nyckeln följer aldrig med i en export.
+ */
 export async function readAllForExport() {
   return tx(['exams', 'tasks', 'log', 'kv'], 'readonly', async (t) => {
     const [exams, tasks, log, settingsRec] = await Promise.all([
@@ -553,12 +817,16 @@ export async function counts() {
  * mode "merge":   inget tas bort. Nya tentor/uppgifter läggs till; finns
  *                 samma uppgift redan behålls den som ändrats senast.
  *
- * @param {{exams:Array<{exam:object,data:ArrayBuffer}>, tasks:object[], log:object[], settings:object}} data
+ * @param {{exams:Array<{exam:object,data:ArrayBuffer,facitData?:ArrayBuffer}>, tasks:object[], log:object[], settings:object}} data
  */
 export async function importData(data, mode) {
-  await tx(['exams', 'pdfs', 'tasks', 'log', 'kv'], 'readwrite', async (t) => {
+  await tx(['exams', 'pdfs', 'facitpdfs', 'tasks', 'log', 'kv'], 'readwrite', async (t) => {
     const exams = t.objectStore('exams');
     const pdfs = t.objectStore('pdfs');
+    const facitpdfs = t.objectStore('facitpdfs');
+    const putFacit = (exam, buf) => {
+      if (buf && exam.facitPdf) facitpdfs.put({ examId: exam.id, data: buf, typ: 'application/pdf' });
+    };
     const tasks = t.objectStore('tasks');
     const log = t.objectStore('log');
     const kv = t.objectStore('kv');
@@ -566,11 +834,13 @@ export async function importData(data, mode) {
     if (mode === 'replace') {
       exams.clear();
       pdfs.clear();
+      facitpdfs.clear();
       tasks.clear();
       log.clear();
-      for (const { exam, data: buf } of data.exams) {
+      for (const { exam, data: buf, facitData } of data.exams) {
         exams.put(exam);
         pdfs.put({ examId: exam.id, data: buf, typ: 'application/pdf' });
+        putFacit(exam, facitData);
       }
       for (const task of data.tasks) tasks.put(task);
       for (const entry of data.log) log.put(entry);
@@ -579,11 +849,12 @@ export async function importData(data, mode) {
     }
 
     // merge
-    for (const { exam, data: buf } of data.exams) {
+    for (const { exam, data: buf, facitData } of data.exams) {
       const old = await reqP(exams.get(exam.id));
       if (!old) {
         exams.put(exam);
         pdfs.put({ examId: exam.id, data: buf, typ: 'application/pdf' });
+        putFacit(exam, facitData);
       } else if (String(exam.andrad) > String(old.andrad)) {
         exams.put({ ...old, namn: exam.namn, andrad: exam.andrad });
       }
@@ -614,10 +885,10 @@ export async function importData(data, mode) {
   emit({ type: 'settings' });
 }
 
-/** Raderar ALL data (används bara efter uttrycklig bekräftelse). */
+/** Raderar ALL data, även en sparad API-nyckel (används bara efter uttrycklig bekräftelse). */
 export async function clearAll() {
-  await tx(['exams', 'pdfs', 'tasks', 'log', 'kv'], 'readwrite', (t) => {
-    for (const s of ['exams', 'pdfs', 'tasks', 'log']) t.objectStore(s).clear();
+  await tx(['exams', 'pdfs', 'facitpdfs', 'tasks', 'log', 'kv', 'secrets'], 'readwrite', (t) => {
+    for (const s of ['exams', 'pdfs', 'facitpdfs', 'tasks', 'log', 'secrets']) t.objectStore(s).clear();
     const kv = t.objectStore('kv');
     kv.delete('settings');
     kv.put({ key: 'schemaVersion', value: SCHEMA_VERSION });
@@ -625,6 +896,7 @@ export async function clearAll() {
   settingsCache = null;
   emit({ type: 'import' });
   emit({ type: 'settings' });
+  emit({ type: 'secrets' });
 }
 
 /* ------------------------------------------------------------------ */

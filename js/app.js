@@ -3,7 +3,9 @@
  *
  * Routes (hash-baserade, fungerar under /<repo-namn>/ på GitHub Pages):
  *   #/                 bibliotek
+ *   #/granska/<id>     granskning efter igenkänning
  *   #/markera/<id>     markeringsläge
+ *   #/markera/<id>/<u> markeringsläge med uppgiften <u> vald (från granskningen)
  *   #/plugga           plugga valda tentor
  *   #/plugga/<id>      plugga en tenta
  *   #/installningar    inställningar
@@ -15,6 +17,7 @@
 import * as db from './db.js';
 import { renderLibrary, uploadFiles } from './library.js';
 import { renderMarking } from './marking.js';
+import { renderReview } from './review.js';
 import { renderStudy } from './study.js';
 import { renderSettings } from './settings.js';
 import { applyTheme, syncThemeColor } from './theme.js';
@@ -24,7 +27,9 @@ const app = document.getElementById('app');
 
 const ROUTES = [
   { re: /^#?\/?$/, view: 'library', render: (root) => renderLibrary(root) },
+  { re: /^#\/granska\/([\w-]+)$/, view: 'review', render: (root, m) => renderReview(root, m[1]) },
   { re: /^#\/markera\/([\w-]+)$/, view: 'marking', render: (root, m) => renderMarking(root, m[1]) },
+  { re: /^#\/markera\/([\w-]+)\/([\w-]+)$/, view: 'marking', render: (root, m) => renderMarking(root, m[1], m[2]) },
   { re: /^#\/plugga\/([\w-]+)$/, view: 'study', render: (root, m) => renderStudy(root, m[1]) },
   { re: /^#\/plugga$/, view: 'study', render: (root) => renderStudy(root, null) },
   { re: /^#\/installningar$/, view: 'settings', render: (root) => renderSettings(root) },
@@ -134,6 +139,7 @@ async function registerServiceWorker() {
     console.warn('Service worker kunde inte registreras', err);
     return;
   }
+  if (!reg) return;
   let userAskedToUpdate = false;
   const offerUpdate = (worker) => {
     showBanner('update', {

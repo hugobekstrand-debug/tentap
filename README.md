@@ -3,10 +3,12 @@
 Plugga gamla tentor som en inlämningsuppgift: en ändlig lista uppgifter som du tar en i taget, med en progress-bar som når 100 % först när allt är löst.
 
 1. **Ladda upp** gamla tentor som PDF.
-2. **Markera** varje uppgift (och facit, om det finns) genom att dra rutor över sidorna.
-3. **Plugga**: en uppgift i taget som skarp bild. Markera den som *Klar* eller *Svår, kom tillbaka*.
+2. **Granska**: appen hittar själv uppgifter, poäng och facit (gratis, lokalt, via PDF:ens text). Du godkänner eller justerar.
+3. **Plugga**: en uppgift i taget som skarp bild. Tryck *Klar* eller *Svår*, tills det står 100 %.
 
-Appen är en ren statisk webbplats (HTML, CSS och JavaScript-moduler). Den har ingen server, inget byggsteg, inga konton och ingen spårning. All data stannar i din webbläsare.
+Räcker inte den automatiska igenkänningen kan du markera uppgifterna själv, eller låta AI göra det (Premium, med din egen API-nyckel).
+
+Appen är en ren statisk webbplats (HTML, CSS och JavaScript-moduler). Den har ingen server, inget byggsteg, inga konton och ingen spårning. All data stannar i din webbläsare – det enda undantaget är när du själv startar en AI-analys, då skickas tentans PDF till Anthropics API.
 
 ---
 
@@ -84,8 +86,23 @@ En installerad app får dessutom oftare "skyddad lagring" av webbläsaren (se In
 
 ## Så använder du appen
 
-### Markera uppgifter
-1. Tryck **Markera uppgifter** på en tenta.
+### Automatisk igenkänning (gratis, standard)
+När du laddar upp en tenta går den igenom fyra steg, som visas per fil: **Läser tentan → Hittar uppgifter → Klipper ut figurer → Klar**. Allt sker i webbläsaren; inget lämnar enheten och ingen nyckel behövs. Laddar du upp en enda fil öppnas granskningen direkt.
+
+**Så fungerar det:**
+1. PDF:ens *textlager* läses sida för sida och delas upp i rader (sidhuvuden, sidfötter och sidnummer sorteras bort).
+2. Rader som *börjar* med en rubrik blir kandidater: ord + nummer (*Problem 3.*, *Uppgift 4 (3 p)*, *Task*, *Question*, *Exercise*, *Övning*, *Fråga*, *Q2* …) eller, som reserv, bara ett nummer (*1.*, *1)*). Appen väljer den längsta stigande numreringen och hoppar över hänvisningar i löptext ("se Problem 2").
+3. Poäng läses ut i alla vanliga format (*(3 p)*, *[3 p]*, *3 poäng*, *3 points*, *1,5 p*), även per deluppgift (a, b, c). Tentans angivna totalpoäng ("total of 25 points", "totalt 25 poäng") jämförs med summan.
+4. Facit hittas efter *Solution:*, *Lösning:*, *Lösningsförslag*, *Svar:*, *Answer:* eller *Facit* (kräver kolon eller att ordet står ensamt), samlat på slutet efter *Lösningar*/*Solutions*, eller i en separat facit-PDF (⋯ → **Lägg till facit-PDF**).
+5. Varje uppgift och facit klipps ut som egna rutor – en per sida om de går över flera sidor – och beskärs automatiskt mot innehållet. Omslag och avslutande rader ("Good luck", "Lycka till") kommer aldrig med.
+
+**Begränsningar:** textigenkänningen kräver att PDF:en har ett textlager (inskannade PDF:er saknar det) och att uppgifterna har tydliga rubriker i början av raden. Ovanliga layouter (flera spalter, rubriker utan nummer) kan bli fel. Då föreslår appen AI-igenkänning eller manuell markering, och du väljer själv.
+
+### Granska
+Efter igenkänningen visas t.ex. **Hittade 7 uppgifter · 25 p**, vilken metod som användes och om poängen stämmer med tentans totalpoäng. Varje uppgift har en bricka: **Säker** eller **Behöver koll** (de osäkra visas överst, med en förklaring). Tryck på en uppgift för att se den stort, byta etikett/poäng, **slå ihop** med nästa, **dela** i två, **ta bort** eller **justera rutan** i markeringsvyn. Allt går att ångra. **Godkänn och börja plugga** när du är nöjd.
+
+### Markera uppgifter själv
+1. Tryck **⋯ → Markera manuellt** på en tenta (eller **Markera själv** i granskningen).
 2. Välj läget **Markera** (på dator är det förvalt) och dra en ruta runt första uppgiften.
 3. I panelen som dyker upp väljer du **Uppgift**, kontrollerar etiketten (t.ex. "Problem 1") och fyller i poäng om du vill. Tryck **Spara**.
 4. Ligger facit direkt efter uppgiften: dra en ruta runt facit, välj **Facit** och vilken uppgift det hör till. Appen föreslår själv rätt typ och uppgift när du markerar i ordning.
@@ -98,14 +115,30 @@ En installerad app får dessutom oftare "skyddad lagring" av webbläsaren (se In
 **Tips på dator:** Håll **Mellanslag** för att tillfälligt skrolla/dra sidan. **Ctrl/⌘ + Z** ångrar, **Ctrl/⌘ + Shift + Z** gör om, **Delete** tar bort vald ruta, **+ / − / 0** zoomar.
 
 ### Plugga
-- **Klar** (K): uppgiften är löst. Den räknas in i progress-baren.
-- **Svår, kom tillbaka** (S): den kommer tillbaka senare i kön. "Svår" räknas *inte* som klar, så 100 % nås bara när allt är klart.
+- **Klar** (K): uppgiften är löst. Den räknas in i progressen.
+- **Svår** (S): den kommer tillbaka senare i kön. "Svår" räknas *inte* som klar, så 100 % nås bara när allt är klart.
+- **Visa facit** (F): finns bara när uppgiften har facit. Facit är dolt tills du trycker.
 - **Hoppa över** (H): ingen ändring, uppgiften läggs sist i kön.
-- **Visa facit** (F): facit glider in under uppgiften.
 - **Föregående** (←) och **Nästa** (→). **Esc** lämnar pluggläget. **?** visar alla kortkommandon.
-- Varje statusbyte kan ångras i några sekunder via **Ångra** i meddelandet längst ned.
+- Varje statusbyte kan ångras i några sekunder via **Ångra** i meddelandet längst ned. Vid 25, 50 och 75 % visas en milstolpe, vid 100 % ett firande.
 - Zooma bilden med två fingrar eller dubbeltryck (mobil) eller **Ctrl/⌘ + scroll** (dator).
-- Under ⚙ (reglage-ikonen) väljer du **Väg efter poäng** och ordning (**Blandad**, **Kronologisk**, **Svåra först**).
+- Under **⋯** väljer du **Väg efter poäng** och ordning (**Blandad**, **Kronologisk**, **Svåra först**). Dagsmålet ("Idag 2 av 3") ställer du in under Inställningar.
+
+### Premium: AI-igenkänning (egen API-nyckel)
+För tentor där textigenkänningen inte räcker – ovanliga layouter, rubriker utan nummer, inskannade PDF:er – kan Claude från Anthropic hitta uppgifterna. "Premium" är bara en etikett: det finns ingen betalning, inget konto och ingen server. Du använder din egen API-nyckel och betalar Anthropic direkt.
+
+**Skaffa en nyckel:**
+1. Skapa ett konto i [Anthropic Console](https://console.anthropic.com/).
+2. Fyll på krediter under **Billing**.
+3. Sätt en **utgiftsgräns** under **Limits** – då vet du vad det högst kan kosta.
+4. Skapa en nyckel under **API Keys**.
+5. I appen: tryck **Analysera med AI** (eller Inställningar → AI-igenkänning), klistra in nyckeln och tryck **Testa och spara**. Testet är ett gratis anrop som bara kontrollerar nyckeln.
+
+**Kostnad:** vanligen några cent per tenta, beroende på antal sidor och modell – se [Anthropics prissida](https://www.anthropic.com/pricing#api). Samma tenta analyseras bara en gång: svaret sparas, så att en ny körning inte kostar något (⋯ → **Analysera om med AI** gör ett nytt anrop).
+
+**Integritet:** nyckeln sparas bara i den här webbläsaren, i en egen del av databasen, och följer **aldrig** med i säkerhetskopior. När du startar en analys skickas tentans PDF (och facit-PDF:en, om du lagt till en) direkt från webbläsaren till Anthropics API. Inget annat lämnar enheten, och AI körs aldrig utan att du valt det.
+
+**Så fungerar det:** modellen pekar ut *vad* som finns (uppgifter, poäng, deluppgifter och den exakta texten där varje uppgift och facit börjar). De exakta koordinaterna hämtas sedan ur PDF:ens textlager och klippen görs precis som i textigenkänningen. Hittas inte texten (t.ex. i en inskannad PDF) används modellens uppskattade ruta, och uppgiften märks **Behöver koll**. Resultatet ersätter det tidigare, framsteg bevaras på uppgifter med samma etikett, och **Ångra** återställer. Modell väljer du under Inställningar (standard: Sonnet).
 
 ### Säkerhetskopiera och flytta mellan enheter
 Allt sparas automatiskt i webbläsarens databas (IndexedDB) direkt när du gör något. Det finns ingen spara-knapp.
@@ -123,12 +156,15 @@ Allt sparas automatiskt i webbläsarens databas (IndexedDB) direkt när du gör 
 
 Service workern cachar appen för offlinebruk och byter **inte** version tyst. När du har ändrat något:
 
-1. Öka `VERSION` i **`sw.js`** (t.ex. `'1.0.0'` → `'1.0.1'`). Det är det som får webbläsarna att hämta den nya versionen.
-2. Öka gärna `APP_VERSION` i **`js/version.js`** till samma nummer (det visas i appen).
+1. Höj `VERSION` i **`sw.js`** (t.ex. `'2.0.0'` → `'2.0.1'`). Det är det som får webbläsarna att hämta den nya versionen.
+2. Höj `APP_VERSION` i **`js/version.js`** till samma nummer (det visas i appen).
 3. Har du lagt till en ny fil i appen: lägg till den i listan `SHELL` i `sw.js`.
-4. Ladda upp och committa. Inom några minuter visar appen bannern **"Ny version tillgänglig – Uppdatera"**. Tryck på den för att byta.
+4. Kör testerna (se nedan).
+5. Ladda upp och committa. Inom några minuter visar appen bannern **"Ny version tillgänglig – Uppdatera"**. Tryck på den för att byta.
 
-Ändrar du datamodellen: öka `SCHEMA_VERSION` i `js/db.js` och lägg till ett migreringssteg i `MIGRATIONS`. Ta aldrig bort gamla steg, så kan äldre data och säkerhetskopior alltid uppgraderas.
+Ändrar du datamodellen: öka `SCHEMA_VERSION` i `js/db.js` och lägg till ett migreringssteg i `MIGRATIONS`. Ta aldrig bort gamla steg, så kan äldre data och säkerhetskopior alltid uppgraderas. (Version 2 lade till igenkänning, facit-PDF och API-nyckel; befintliga tentor och uppgifter fick metod/källa "manuell".)
+
+Service workern cachar bara appens egna filer. Anrop till `api.anthropic.com` rörs aldrig.
 
 ---
 
@@ -140,7 +176,9 @@ Service workern cachar appen för offlinebruk och byter **inte** version tyst. N
 - **Privat/inkognito-läge** sparar inget permanent. Appen varnar direkt om lagring inte fungerar.
 - **Lösenordsskyddade PDF:er** kan inte läsas. Ta bort lösenordet först (t.ex. genom att skriva ut som ny PDF).
 - **Slå ihop** känner igen samma tenta via dess interna id. Laddar du upp samma PDF separat på två enheter blir det två olika tentor.
-- Ingen AI-extraktion, ämnestaggning, timer eller automatisk synk i den här versionen.
+- **Textigenkänningen** kräver textlager och tydliga rubriker i radens början (se ovan). Ingen OCR för inskannade PDF:er – använd AI-igenkänning eller markera själv.
+- **AI-igenkänning** kräver internet och en egen API-nyckel. En PDF får vara högst cirka 23 MB och 600 sidor per anrop; dela upp större tentor.
+- Ingen ämnestaggning, timer, AI-rättning av dina lösningar eller automatisk synk.
 
 ---
 
@@ -149,10 +187,19 @@ Service workern cachar appen för offlinebruk och byter **inte** version tyst. N
 ```
 index.html              App-skal
 css/styles.css          Designsystem (CSS-variabler) och alla vyer
-js/app.js               Start, hash-routing (#/, #/markera/<id>, #/plugga[/<id>], #/installningar), service worker
-js/db.js                IndexedDB "tentaplugget-v1": tentor, PDF:er, uppgifter, logg, inställningar, migreringar
+js/app.js               Start, hash-routing (#/, #/granska/<id>, #/markera/<id>[/<uppgift>], #/plugga[/<id>], #/installningar), service worker
+js/db.js                IndexedDB "tentaplugget-v1": tentor, PDF:er, facit-PDF:er, uppgifter, logg, inställningar, hemligheter, migreringar
 js/pdf.js               PDF.js-wrapper: laddning, sidrendering, uppgiftsbilder med minnescache (LRU)
-js/library.js           Startsida, uppladdning, tentakort
+js/textlayer.js         PDF:ens textlager → rader (normaliserade koordinater, brus, fetstil)
+js/detect.js            Igenkänning: rubriker, poäng, delmoment, facit, säkerhet (rena funktioner)
+js/crop.js              Intervall → rektanglar per sida, autobeskärning mot pixlar (rena funktioner)
+js/extract.js           Kör igenkänningen för en tenta och bygger uppgifter
+js/analysis.js          Omanalys med stegvis förlopp, facit-PDF, Ångra
+js/review.js            Granskningsvyn
+js/ai.js                Claude API-klient (Premium): anrop, schema, validering, fel
+js/premium.js           Premium-sheet, API-nyckel, AI-analysflödet
+js/models.js            Modellval (standardmodellen står här och bara här)
+js/library.js           Hem: progressring, tentakort, uppladdning, välkomstvy
 js/marking.js           Markeringsläget
 js/study.js             Pluggläget
 js/stats.js             Progress, streak, "idag" (rena funktioner)
@@ -163,11 +210,24 @@ js/theme.js             Ljust/mörkt tema
 js/version.js           Versionsnummer som visas i appen
 sw.js                   Service worker (versionerad cache)
 manifest.webmanifest    PWA-manifest
-icons/                  App-ikoner
+icons/                  App-ikoner (symbolen: orange rundad kvadrat med vit bock)
 vendor/pdfjs/           PDF.js 4.10.38
+tests.html              Tester för igenkänning och klipp i webbläsaren
+tests/                  Testsvit, konstruerade fixtures, kontrastskript
 ```
 
-**Datamodell (kort):** Regioner lagras som `{ sida, x, y, w, h }`, normaliserade (0–1) mot sidans storlek, så de är oberoende av zoom. PDF:en lagras som `ArrayBuffer` i en egen store (`pdfs`) i stället för som Blob. Det är medvetet: Blobbar i IndexedDB har historiskt gått sönder i Safari på iOS, och tentalistan behöver då inte heller läsa in PDF-datan. Statusvärden: `"ej_gjord" | "klar" | "svår"`.
+**Tester:** öppna `tests.html` (fungerar utan nätverk och utan nyckel), eller kör i terminalen:
+
+```bash
+node tests/run-node.mjs      # igenkänning och klipp mot konstruerade fixtures
+node tests/contrast.mjs      # textkontraster mot WCAG AA, ljust och mörkt läge
+```
+
+Lägg aldrig riktiga tenta-PDF:er i repot (de kan vara upphovsrättsskyddade). Mappen `tests/lokalt/` är ignorerad av git för egna testfiler.
+
+**Design:** alla färger, radier, typografi och den enda skuggan finns som CSS-variabler överst i `css/styles.css` (orange och vit, med mörkt läge). Inga färger hårdkodas utanför variablerna.
+
+**Datamodell (kort):** Regioner lagras som `{ sida, x, y, w, h }`, normaliserade (0–1) mot sidans storlek med origo uppe till vänster, så de är oberoende av zoom (regioner i en separat facit-PDF har dessutom `pdf: "facit"`). Uppgifter har `delmoment`, `kalla` (`text`/`ai`/`manuell`), `sakerhet` (`hög`/`låg`/`manuell`) och `anmarkningar`; tentor har `extraktion` (metod, sammanfattning, cachat AI-svar) och `foregaendeUppgifter` (för Ångra). PDF:en lagras som `ArrayBuffer` i en egen store (`pdfs`) i stället för som Blob. Det är medvetet: Blobbar i IndexedDB har historiskt gått sönder i Safari på iOS, och tentalistan behöver då inte heller läsa in PDF-datan. Statusvärden: `"ej_gjord" | "klar" | "svår"`.
 
 **Köra lokalt:** valfri statisk server från mappen, t.ex.
 

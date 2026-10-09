@@ -14,7 +14,7 @@
  * Alla sökvägar är relativa till sw.js, så det fungerar under /<repo-namn>/.
  */
 
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 const SHELL_CACHE = `tentaplugget-shell-${VERSION}`;
 const RUNTIME_CACHE = 'tentaplugget-runtime-pdfjs-4.10.38';
 
@@ -23,15 +23,24 @@ const SHELL = [
   './index.html',
   './manifest.webmanifest',
   './css/styles.css',
+  './js/ai.js',
+  './js/analysis.js',
   './js/app.js',
   './js/backup.js',
+  './js/crop.js',
   './js/db.js',
+  './js/detect.js',
+  './js/extract.js',
   './js/library.js',
   './js/marking.js',
+  './js/models.js',
   './js/pdf.js',
+  './js/premium.js',
+  './js/review.js',
   './js/settings.js',
   './js/stats.js',
   './js/study.js',
+  './js/textlayer.js',
   './js/theme.js',
   './js/ui.js',
   './js/version.js',

@@ -5,11 +5,14 @@
 
 import * as db from './db.js';
 import { inspectPdf, forgetExam, PdfError } from './pdf.js';
-import { progress, progressLabel, todayCount, streak } from './stats.js';
+import { progress, progressLabel, todayCount, streak, fmtPoints } from './stats.js';
+import { recognizeAndSave, STEG } from './extract.js';
 import {
   h,
   icon,
-  logo,
+  brand,
+  badge,
+  progressRing,
   navigate,
   openMenu,
   openDialog,
@@ -21,11 +24,17 @@ import {
   daysSince,
   showBanner,
   hideBanner,
+  stepper,
 } from './ui.js';
 import { runExport, runImport } from './backup.js';
+import { rerunTextRecognition, addFacitPdf } from './analysis.js';
+import { runAiAnalysis, hasApiKey } from './premium.js';
 import { APP_VERSION } from './version.js';
 
 const LARGE_PDF_BYTES = 60 * 1024 * 1024;
+
+/** Senast visade procent i ringen (count-up animeras därifrån, inte från 0 varje gång). */
+let lastRingPct = 0;
 
 /* ------------------------------------------------------------------ */
 /* Uppladdning (används även av app.js för drag-and-drop)               */
@@ -46,11 +55,29 @@ function defaultName(filename) {
   );
 }
 
-/** Laddar upp flera PDF:er, en i taget, med status per fil. */
+/** Kort resultattext för en färdig igenkänning. */
+function resultText(r) {
+  const n = r.tasks.length;
+  if (!n) {
+    return r.extraktion.textlagerSaknas
+      ? 'Sparad. PDF:en verkar inskannad – markera själv eller prova AI.'
+      : 'Sparad. Inga uppgifter hittades – markera själv eller prova AI.';
+  }
+  const sum = r.extraktion.sammanfattning?.summaPoang;
+  let t = `${plural(n, 'uppgift', 'uppgifter')} hittade${sum ? ` · ${fmtPoints(sum)} p` : ''}`;
+  if (r.extraktion.forslag) t += ' · behöver koll';
+  return t;
+}
+
+/**
+ * Laddar upp flera PDF:er, en i taget, med status per fil. Varje tenta
+ * sparas först och analyseras sedan med textigenkänningen (lokalt, gratis).
+ * Laddas en enda fil upp öppnas granskningen direkt när den är klar.
+ */
 export async function uploadFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
-  const items = files.map((f) => ({ id: db.uid(), name: f.name, size: f.size, state: 'waiting', text: 'Väntar…', file: f }));
+  const items = files.map((f) => ({ id: db.uid(), name: f.name, size: f.size, state: 'waiting', step: null, text: 'Väntar…', file: f }));
   uploads.unshift(...items);
   notifyUploads();
 
@@ -59,7 +86,8 @@ export async function uploadFiles(fileList) {
 
   for (const item of items) {
     item.state = 'working';
-    item.text = item.size > LARGE_PDF_BYTES ? `Stor fil (${fmtBytes(item.size)}) – det kan ta en stund…` : 'Läser in…';
+    item.step = 'read';
+    item.text = item.size > LARGE_PDF_BYTES ? `Stor fil (${fmtBytes(item.size)}) – det kan ta en stund.` : '';
     notifyUploads();
     try {
       const f = item.file;
@@ -95,9 +123,24 @@ export async function uploadFiles(fileList) {
       if (Array.isArray(settings.valdaTentor)) {
         await db.saveSettings({ valdaTentor: [...settings.valdaTentor, exam.id] });
       }
-      item.state = 'done';
       item.examId = exam.id;
-      item.text = `Klar · ${plural(info.antalSidor, 'sida', 'sidor')}`;
+      try {
+        const r = await recognizeAndSave(exam.id, {
+          onStep: (step) => {
+            item.step = step;
+            notifyUploads();
+          },
+        });
+        item.state = 'done';
+        item.step = 'done';
+        item.found = r.tasks.length;
+        item.text = resultText(r);
+      } catch (err) {
+        console.warn('Igenkänningen misslyckades:', item.name, err);
+        item.state = 'warn';
+        item.found = 0;
+        item.text = 'Tentan är sparad, men uppgifterna kunde inte hittas automatiskt. Markera dem själv eller prova AI.';
+      }
     } catch (err) {
       console.warn('Uppladdning misslyckades:', item.name, err);
       item.state = 'error';
@@ -108,11 +151,16 @@ export async function uploadFiles(fileList) {
     item.file = null; // släpp referensen
     notifyUploads();
   }
+  // En enda fil: gå direkt till granskningen (om man fortfarande är på startsidan).
+  const only = items.length === 1 ? items[0] : null;
+  if (only?.examId && (only.state === 'done' || only.state === 'warn') && /^#?\/?$/.test(location.hash)) {
+    navigate(`#/granska/${only.examId}`);
+  }
 }
 
 function clearFinishedUploads() {
   for (let i = uploads.length - 1; i >= 0; i--) {
-    if (uploads[i].state === 'done' || uploads[i].state === 'error') uploads.splice(i, 1);
+    if (['done', 'warn', 'error'].includes(uploads[i].state)) uploads.splice(i, 1);
   }
   notifyUploads();
 }
@@ -141,36 +189,41 @@ export async function renderLibrary(root) {
 
   let destroyed = false;
   let renderSeq = 0;
+  view.replaceChildren(...skeleton());
 
   async function refresh() {
     const seq = ++renderSeq;
-    const [exams, tasks, settings, log] = await Promise.all([
+    const [exams, tasks, settings, log, premium] = await Promise.all([
       db.listExams(),
       db.listTasks(),
       db.getSettings(),
       db.listLog(),
+      hasApiKey(),
     ]);
     if (destroyed || seq !== renderSeq) return;
     const activeEl = document.activeElement;
     const focusKey = activeEl?.dataset?.focusKey;
 
-    view.replaceChildren(fileInput);
-    view.append(header());
-
+    view.replaceChildren(fileInput, header());
     if (!exams.length) {
+      view.classList.remove('has-exams');
       view.append(welcome());
       hideBanner('backup');
     } else {
+      view.classList.add('has-exams');
       const tasksByExam = groupBy(tasks, (t) => t.examId);
       const selected = Array.isArray(settings.valdaTentor)
         ? exams.filter((e) => settings.valdaTentor.includes(e.id))
         : exams;
       const selectedTasks = selected.flatMap((e) => (tasksByExam.get(e.id) || []).filter(hasRegions));
-      // Översikten visas först när det finns något att plugga – annars är
-      // kortets "Markera uppgifter" det enda tydliga valet.
-      if (tasks.some(hasRegions)) view.append(overview(exams, selected, selectedTasks, settings, log));
-      view.append(examList(exams, tasksByExam, settings));
-      view.append(uploadSection(false));
+      view.append(
+        h(
+          'div',
+          { class: 'home-grid' },
+          progressPanel(exams, selected, selectedTasks, settings, log),
+          examList(exams, tasksByExam, settings, premium),
+        ),
+      );
       updateBackupBanner(exams, settings);
     }
     view.append(footer());
@@ -178,11 +231,25 @@ export async function renderLibrary(root) {
     if (focusKey) view.querySelector(`[data-focus-key="${focusKey}"]`)?.focus({ preventScroll: true });
   }
 
+  /** Skelettvy medan datan läses (samma mått som det riktiga innehållet: ingen layout shift). */
+  function skeleton() {
+    return [
+      header(),
+      h(
+        'div',
+        { class: 'home-grid', 'aria-hidden': 'true' },
+        h('section', { class: 'home-progress' }, h('div', { class: 'skel skel-ring' }), h('div', { class: 'skel skel-btn' }), h('div', { class: 'skel skel-line' })),
+        h('section', { class: 'home-exams' }, h('div', { class: 'skel skel-title' }), h('div', { class: 'skel skel-card' }), h('div', { class: 'skel skel-card' })),
+      ),
+      h('p', { class: 'visually-hidden', role: 'status' }, 'Laddar dina tentor…'),
+    ];
+  }
+
   function header() {
     return h(
       'header',
       { class: 'lib-header' },
-      h('div', { class: 'brand' }, logo(30), h('span', { class: 'brand-name' }, 'Tentaplugget')),
+      brand(32),
       h(
         'button',
         {
@@ -200,11 +267,11 @@ export async function renderLibrary(root) {
 
   function welcome() {
     const steps = [
-      ['Ladda upp tentor', 'Gamla tentor som PDF. Flera på en gång går bra.'],
-      ['Markera uppgifterna', 'Dra en ruta runt varje uppgift – och runt facit, om det finns.'],
-      ['Plugga', 'En uppgift i taget, tills progress-baren når 100 %.'],
+      ['Ladda upp gamla tentor', 'PDF-filer. Flera på en gång går bra.'],
+      ['Appen hittar uppgifterna', 'Uppgifter, poäng och facit klipps ut åt dig. Du granskar och justerar om det behövs.'],
+      ['Plugga tills det står 100 %', 'En uppgift i taget. Klar eller Svår – tills allt är klart.'],
     ];
-    return h(
+    const hero = h(
       'section',
       { class: 'welcome', 'aria-labelledby': 'welcome-title' },
       h('h1', { id: 'welcome-title', class: 'welcome-title', tabindex: '-1' }, 'Plugga tentor som en inlämningsuppgift'),
@@ -221,102 +288,96 @@ export async function renderLibrary(root) {
           ),
         ),
       ),
-      uploadSection(true),
+      h(
+        'button',
+        { type: 'button', class: 'btn btn-primary btn-lg btn-block welcome-upload', 'data-focus-key': 'upload', onclick: pickFiles },
+        icon('upload', { size: 20 }),
+        'Ladda upp tentor',
+      ),
+      h('p', { class: 'welcome-drop only-fine' }, 'Du kan också släppa PDF-filer var som helst här.'),
+      uploadStatus(),
       h(
         'p',
         { class: 'welcome-fine' },
         'Allt sparas bara här, i den här webbläsaren. ',
-        h(
-          'button',
-          { type: 'button', class: 'link-btn', onclick: () => runImport() },
-          'Har du en säkerhetskopia? Importera den',
-        ),
+        h('button', { type: 'button', class: 'link-btn', onclick: () => runImport() }, 'Har du en säkerhetskopia? Importera den'),
       ),
     );
+    return hero;
   }
 
-  function overview(exams, selected, selectedTasks, settings, log) {
+  /** Vänsterkolumnen: stor progressring, Fortsätt plugga, idag/streak. */
+  function progressPanel(exams, selected, selectedTasks, settings, log) {
     const p = progress(selectedTasks, settings.viktaEfterPoang);
     const today = todayCount(log);
     const days = streak(log);
+    const goal = settings.dagsmal || 3;
     const allSelected = selected.length === exams.length;
     const scopeText = allSelected ? (exams.length === 1 ? 'Din tenta' : 'Alla tentor') : `${selected.length} av ${exams.length} tentor`;
-
-    const bar = h(
-      'div',
-      {
-        class: `bar bar-lg ${p.allDone ? 'is-done' : ''}`,
-        role: 'progressbar',
-        'aria-label': 'Total progress',
-        'aria-valuemin': '0',
-        'aria-valuemax': '100',
-        'aria-valuenow': String(p.pct),
-        'aria-valuetext': progressLabel(p),
-      },
-      h('div', { class: 'bar-fill', style: { width: `${p.pct}%` } }),
-    );
-
     const noTasks = selectedTasks.length === 0;
-    const meta = [];
-    if (!noTasks) {
-      if (p.hard) meta.push(h('span', { class: 'chip chip--hard' }, icon('flag', { size: 14 }), `${p.hard} svåra`));
-      meta.push(h('span', { class: 'muted' }, p.allDone ? 'Allt klart' : `${p.remaining} kvar`));
-    }
 
-    const activity = [];
-    if (today > 0) activity.push(`Idag: ${plural(today, 'uppgift', 'uppgifter')} klar${today === 1 ? '' : 'a'}`);
-    if (days > 1) activity.push(`${days} dagar i rad`);
+    const ring = progressRing({ label: `Progress för ${scopeText.toLowerCase()}` });
+    ring.jump(lastRingPct);
+    const sub = noTasks ? 'inga uppgifter än' : p.weighted ? `${fmtPoints(p.doneWeight)} av ${fmtPoints(p.totalWeight)} p` : `${p.doneCount} av ${p.count} klara`;
+    requestAnimationFrame(() => ring.set(p.pct, sub, progressLabel(p)));
+    lastRingPct = p.pct;
+
+    const activity = [`Idag ${today} av ${goal}`];
+    if (days > 0) activity.push(`${days} ${days === 1 ? 'dag' : 'dagar'} i rad`);
+
+    let cta;
+    if (noTasks) {
+      const first = exams.find((e) => selected.includes(e)) || exams[0];
+      cta = h('button', { type: 'button', class: 'btn btn-primary btn-lg btn-block', 'data-focus-key': 'cta', onclick: () => navigate(`#/granska/${first.id}`) }, 'Granska uppgifterna', icon('arrowRight'));
+    } else if (p.allDone) {
+      cta = h('button', { type: 'button', class: 'btn btn-secondary btn-lg btn-block', 'data-focus-key': 'cta', onclick: () => navigate('#/plugga') }, icon('refresh'), 'Repetera');
+    } else {
+      cta = h('button', { type: 'button', class: 'btn btn-primary btn-lg btn-block', 'data-focus-key': 'cta', onclick: () => navigate('#/plugga') }, 'Fortsätt plugga', icon('arrowRight'));
+    }
 
     return h(
       'section',
-      { class: 'card overview', 'aria-labelledby': 'overview-title' },
+      { class: 'home-progress', 'aria-labelledby': 'overview-title' },
       h(
         'div',
-        { class: 'overview-head' },
-        h('h1', { class: 'overview-title', id: 'overview-title', tabindex: '-1' }, scopeText),
+        { class: 'home-progress-head' },
+        h('h1', { class: 'home-scope', id: 'overview-title', tabindex: '-1' }, scopeText),
         exams.length > 1
-          ? h(
-              'button',
-              { type: 'button', class: 'link-btn', 'data-focus-key': 'choose', onclick: () => chooseExams(exams, settings) },
-              'Välj tentor',
-            )
+          ? h('button', { type: 'button', class: 'link-btn', 'data-focus-key': 'choose', onclick: () => chooseExams(exams, settings) }, 'Välj tentor')
           : null,
       ),
-      noTasks
-        ? h('p', { class: 'muted overview-empty' }, 'Inga uppgifter markerade än. Börja med Markera uppgifter på en tenta nedan.')
-        : [h('p', { class: 'overview-numbers' }, progressLabel(p)), bar, h('div', { class: 'overview-meta' }, meta)],
-      h(
-        'button',
-        {
-          type: 'button',
-          class: 'btn btn-primary btn-lg btn-block',
-          disabled: noTasks || null,
-          'data-focus-key': 'study-all',
-          onclick: () => navigate('#/plugga'),
-        },
-        allSelected ? 'Plugga alla' : 'Plugga valda',
-        icon('arrowRight'),
-      ),
-      activity.length ? h('p', { class: 'activity' }, icon('calendar', { size: 16 }), activity.join(' · ')) : null,
+      ring.el,
+      p.allDone ? h('p', { class: 'home-done' }, icon('checkCircle', { size: 18 }), 'Allt klart. Snyggt jobbat!') : null,
+      p.hard && !p.allDone ? h('p', { class: 'home-hard' }, badge(`${p.hard} ${p.hard === 1 ? 'svår' : 'svåra'} kvar`, { tone: 'hard', iconName: 'flag' })) : null,
+      cta,
+      h('p', { class: 'activity' }, activity.join(' · ')),
     );
   }
 
-  function examList(exams, tasksByExam, settings) {
+  function examList(exams, tasksByExam, settings, premium) {
     return h(
       'section',
-      { class: 'exams', 'aria-labelledby': 'exams-title' },
-      h('h2', { class: 'section-title', id: 'exams-title' }, 'Tentor'),
+      { class: 'home-exams', 'aria-labelledby': 'exams-title' },
+      h(
+        'div',
+        { class: 'section-head' },
+        h('h2', { class: 'section-title', id: 'exams-title' }, 'Tentor'),
+        h('button', { type: 'button', class: 'btn btn-secondary btn-sm', 'data-focus-key': 'upload', onclick: pickFiles }, icon('plus', { size: 18 }), 'Lägg till'),
+      ),
+      uploadStatus(),
       h(
         'ul',
         { class: 'exam-list' },
-        exams.map((exam) => examCard(exam, (tasksByExam.get(exam.id) || []).filter(hasRegions), settings)),
+        exams.map((exam) => examCard(exam, (tasksByExam.get(exam.id) || []).filter(hasRegions), settings, premium)),
       ),
+      h('p', { class: 'drop-hint only-fine' }, icon('upload', { size: 16 }), 'Släpp PDF-filer här för att lägga till fler tentor.'),
     );
   }
 
-  function examCard(exam, tasks, settings) {
+  function examCard(exam, tasks, settings, premium) {
     const p = progress(tasks, settings.viktaEfterPoang);
     const hasTasks = tasks.length > 0;
+    const needsReview = tasks.some((t) => t.sakerhet === db.SAKERHET.LAG);
     const moreBtn = h(
       'button',
       {
@@ -331,7 +392,12 @@ export async function renderLibrary(root) {
       openMenu(
         moreBtn,
         [
-          { label: 'Markera uppgifter', icon: 'marquee', onSelect: () => navigate(`#/markera/${exam.id}`) },
+          { label: 'Granska uppgifter', icon: 'list', onSelect: () => navigate(`#/granska/${exam.id}`) },
+          { label: 'Markera manuellt', icon: 'marquee', onSelect: () => navigate(`#/markera/${exam.id}`) },
+          { label: 'Analysera med AI', icon: 'sparkles', badge: premium ? null : 'Premium', onSelect: () => runAiAnalysis(exam.id) },
+          { label: 'Hitta uppgifter automatiskt', icon: 'scan', onSelect: () => rerunTextRecognition(exam.id) },
+          exam.facitPdf ? null : { label: 'Lägg till facit-PDF', icon: 'fileText', onSelect: () => addFacitPdf(exam.id) },
+          { separator: true },
           { label: 'Byt namn', icon: 'edit', onSelect: () => renameExam(exam) },
           { label: 'Nollställ framsteg', icon: 'refresh', disabled: !hasTasks, onSelect: () => resetExam(exam, tasks) },
           { separator: true },
@@ -342,10 +408,9 @@ export async function renderLibrary(root) {
     );
 
     let metaText;
-    if (!hasTasks) metaText = 'Inga uppgifter markerade än';
-    else if (p.allDone) metaText = `Alla ${p.count} klara`;
+    if (!hasTasks) metaText = exam.extraktion.textlagerSaknas ? 'Inskannad PDF – välj hur uppgifterna ska hittas' : 'Inga uppgifter än';
     else metaText = `${p.doneCount} av ${p.count} klara`;
-    const pointsText = hasTasks && p.points ? ` · ${p.pointsDone} av ${p.points} p` : '';
+    const pointsText = hasTasks && p.points ? ` · ${fmtPoints(p.pointsDone)} av ${fmtPoints(p.points)} p` : '';
 
     return h(
       'li',
@@ -359,22 +424,24 @@ export async function renderLibrary(root) {
           ? h(
               'div',
               {
-                class: `bar bar-thin ${p.allDone ? 'is-done' : ''}`,
+                class: 'bar bar-thin',
                 role: 'progressbar',
                 'aria-label': `Progress för ${exam.namn}`,
                 'aria-valuemin': '0',
                 'aria-valuemax': '100',
                 'aria-valuenow': String(p.pct),
+                'aria-valuetext': progressLabel(p),
               },
               h('div', { class: 'bar-fill', style: { width: `${p.pct}%` } }),
             )
           : null,
-        hasTasks && (p.hard || p.allDone)
+        hasTasks && (p.hard || p.allDone || needsReview)
           ? h(
               'div',
               { class: 'exam-chips' },
-              p.allDone ? h('span', { class: 'chip chip--ok' }, icon('check', { size: 14 }), 'Klar') : null,
-              p.hard ? h('span', { class: 'chip chip--hard' }, icon('flag', { size: 14 }), `${p.hard} ${p.hard === 1 ? 'svår' : 'svåra'}`) : null,
+              p.allDone ? badge('Klar', { tone: 'ok', iconName: 'check' }) : null,
+              p.hard ? badge(`${p.hard} ${p.hard === 1 ? 'svår' : 'svåra'}`, { tone: 'hard', iconName: 'flag' }) : null,
+              needsReview ? badge('Behöver koll', { tone: 'warn', iconName: 'alert' }) : null,
             )
           : null,
       ),
@@ -384,82 +451,40 @@ export async function renderLibrary(root) {
         hasTasks
           ? h(
               'button',
-              {
-                type: 'button',
-                class: 'btn btn-primary',
-                'data-focus-key': `study-${exam.id}`,
-                onclick: () => navigate(`#/plugga/${exam.id}`),
-              },
+              { type: 'button', class: 'btn btn-secondary btn-sm exam-cta', 'data-focus-key': `study-${exam.id}`, onclick: () => navigate(`#/plugga/${exam.id}`) },
+              icon('play', { size: 16 }),
               'Plugga',
             )
           : h(
               'button',
-              {
-                type: 'button',
-                class: 'btn btn-primary',
-                'data-focus-key': `mark-${exam.id}`,
-                onclick: () => navigate(`#/markera/${exam.id}`),
-              },
-              'Markera uppgifter',
+              { type: 'button', class: 'btn btn-secondary btn-sm exam-cta', 'data-focus-key': `review-${exam.id}`, onclick: () => navigate(`#/granska/${exam.id}`) },
+              'Välj hur',
             ),
         moreBtn,
       ),
     );
   }
 
-  /* ---------- Uppladdningsyta ---------- */
+  /* ---------- Uppladdning ---------- */
 
   let uploadListEl = null;
-  function uploadSection(isWelcome) {
-    const zone = h(
-      'div',
-      { class: `dropzone ${isWelcome ? 'dropzone--hero' : ''}` },
-      h('span', { class: 'dropzone-icon' }, icon('upload', { size: isWelcome ? 28 : 22 })),
-      h(
-        'div',
-        { class: 'dropzone-text' },
-        h('p', { class: 'dropzone-title' }, isWelcome ? 'Släpp dina tentor här' : 'Lägg till fler tentor'),
-        h('p', { class: 'dropzone-hint' }, 'PDF-filer · flera på en gång går bra'),
-      ),
-      h(
-        'button',
-        {
-          type: 'button',
-          class: `btn ${isWelcome ? 'btn-primary btn-lg' : 'btn-secondary'}`,
-          'data-focus-key': 'upload',
-          onclick: pickFiles,
-        },
-        icon('upload', { size: 18 }),
-        'Ladda upp tentor',
-      ),
-    );
-    zone.addEventListener('dragenter', (e) => {
-      e.preventDefault();
-      zone.classList.add('is-over');
-    });
-    zone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      zone.classList.add('is-over');
-    });
-    zone.addEventListener('dragleave', (e) => {
-      if (!zone.contains(e.relatedTarget)) zone.classList.remove('is-over');
-    });
-    zone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      zone.classList.remove('is-over');
-      if (e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);
-    });
-
+  function uploadStatus() {
     uploadListEl = h('div', { class: 'upload-status-wrap', 'aria-live': 'polite' });
     renderUploads();
-    return h(
-      'section',
-      { class: 'upload', 'aria-label': 'Ladda upp tentor' },
-      zone,
-      uploadListEl,
-    );
+    return uploadListEl;
   }
+
+  // Släpp filer var som helst på startsidan.
+  view.addEventListener('dragover', (e) => {
+    if ([...(e.dataTransfer?.types || [])].includes('Files')) {
+      e.preventDefault();
+      view.classList.add('is-dragover');
+    }
+  });
+  view.addEventListener('dragleave', (e) => {
+    if (!view.contains(e.relatedTarget)) view.classList.remove('is-dragover');
+  });
+  view.addEventListener('drop', () => view.classList.remove('is-dragover'));
 
   function renderUploads() {
     if (!uploadListEl) return;
@@ -477,22 +502,28 @@ export async function renderLibrary(root) {
             'span',
             { class: 'upload-item-icon' },
             u.state === 'done'
-              ? icon('checkCircle', { size: 18 })
-              : u.state === 'error'
-                ? icon('alert', { size: 18 })
-                : icon('spinner', { size: 18, cls: u.state === 'working' ? 'spin' : '' }),
+              ? icon('checkCircle', { size: 20 })
+              : u.state === 'error' || u.state === 'warn'
+                ? icon('alert', { size: 20 })
+                : icon('spinner', { size: 20, cls: u.state === 'working' ? 'spin' : '' }),
           ),
           h(
             'div',
             { class: 'upload-item-body' },
             h('p', { class: 'upload-item-name' }, u.name),
-            h('p', { class: 'upload-item-text' }, u.text),
+            u.state === 'working' ? stepper(STEG, u.step) : null,
+            u.state === 'waiting' ? h('p', { class: 'upload-item-text' }, 'Väntar på sin tur') : null,
+            u.text ? h('p', { class: 'upload-item-text' }, u.text) : null,
           ),
-          u.state === 'done' && u.examId
+          (u.state === 'done' || u.state === 'warn') && u.examId
             ? h(
                 'button',
-                { type: 'button', class: 'btn btn-sm btn-quiet', onclick: () => navigate(`#/markera/${u.examId}`) },
-                'Markera uppgifter',
+                {
+                  type: 'button',
+                  class: 'btn btn-sm btn-secondary',
+                  onclick: () => navigate(`#/granska/${u.examId}`),
+                },
+                u.found ? 'Granska' : 'Välj hur',
               )
             : null,
         ),

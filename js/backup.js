@@ -5,8 +5,10 @@
  * {
  *   app: "tentaplugget", format: 1, schemaVersion, appVersion, exportedAt,
  *   settings, log: [...], tasks: [...],
- *   exams: [{ ...tentans metadata, pdfMime, pdfBase64 }]
+ *   exams: [{ ...tentans metadata, pdfMime, pdfBase64, facitPdfBase64? }]
  * }
+ *
+ * API-nyckeln (Premium) ligger i en egen store och tas ALDRIG med.
  *
  * Exporten byggs i bitar (Blob-delar) så att även stora PDF:er går att
  * exportera utan att hela filen behöver ligga som en enda sträng i minnet.
@@ -94,22 +96,37 @@ export async function buildBackup(onProgress = () => {}, appVersion = '') {
     onProgress(i / Math.max(1, exams.length), `Packar ${exam.namn} (${i + 1} av ${exams.length})`);
     const data = await db.getPdfData(exam.id);
     if (!data) throw new Error(`PDF:en för "${exam.namn}" saknas i lagringen.`);
-    const meta = JSON.stringify({ ...exam, pdfMime: 'application/pdf', pdfBase64: '\u0000' });
-    const [before, after] = meta.split('"\\u0000"');
+    const facitData = exam.facitPdf ? await db.getPdfData(exam.id, 'facit') : null;
+    const meta = JSON.stringify({
+      ...exam,
+      pdfMime: 'application/pdf',
+      pdfBase64: '\u0000',
+      ...(facitData ? { facitPdfBase64: '\u0001' } : {}),
+    });
+    const [before, rest] = meta.split('"\\u0000"');
+    const [middle, after] = facitData ? rest.split('"\\u0001"') : [null, rest];
     parts.push((i ? ',' : '') + before + '"');
-    const bytes = new Uint8Array(data);
-    const CHUNK = 3 * 256 * 1024; // multipel av 3 => bitarna kan läggas ihop
-    for (let off = 0; off < bytes.length; off += CHUNK) {
-      parts.push(bytesToBase64(bytes.subarray(off, off + CHUNK)));
-      const frac = (i + Math.min(1, (off + CHUNK) / bytes.length)) / exams.length;
-      onProgress(frac, `Packar ${exam.namn} (${i + 1} av ${exams.length})`);
-      await nextFrame();
+    await pushBase64(parts, data, (f) => onProgress((i + f * (facitData ? 0.8 : 1)) / exams.length, `Packar ${exam.namn} (${i + 1} av ${exams.length})`));
+    if (facitData) {
+      parts.push('"' + middle + '"');
+      await pushBase64(parts, facitData, (f) => onProgress((i + 0.8 + f * 0.2) / exams.length, `Packar facit till ${exam.namn}`));
     }
     parts.push('"' + after);
   }
   parts.push(']}');
   onProgress(1, 'Klart');
   return { blob: new Blob(parts, { type: 'application/json' }), filename: backupFilename(exportedAt), exportedAt };
+}
+
+/** Lägger till datan som base64 i bitar (så att stora PDF:er inte blir en jättesträng). */
+async function pushBase64(parts, data, onFrac) {
+  const bytes = new Uint8Array(data);
+  const CHUNK = 3 * 256 * 1024; // multipel av 3 => bitarna kan läggas ihop
+  for (let off = 0; off < bytes.length; off += CHUNK) {
+    parts.push(bytesToBase64(bytes.subarray(off, off + CHUNK)));
+    onFrac(Math.min(1, (off + CHUNK) / bytes.length));
+    await nextFrame();
+  }
 }
 
 function triggerDownload(blob, filename) {
@@ -204,9 +221,19 @@ export async function runExport(appVersion = '') {
 
 export class BackupError extends Error {}
 
-/** Uppgradera äldre exportformat till nuvarande (lägg till steg här vid behov). */
+/**
+ * Uppgradera äldre exportformat till nuvarande (lägg till steg här vid behov).
+ * schemaVersion 1 → 2: tentor och uppgifter får sina nya fält via
+ * db.normalizeExam/normalizeTask nedan (metod/källa "manuell").
+ */
 function migrateBackup(obj) {
   // format 1 är nuvarande format.
+  if (obj.schemaVersion < 2 && Array.isArray(obj.exams) && Array.isArray(obj.tasks)) {
+    const withTasks = new Set(obj.tasks.map((t) => t?.examId));
+    obj.exams = obj.exams.map((e) =>
+      e && !e.extraktion ? { ...e, extraktion: db.defaultExtraktion(withTasks.has(e.id) ? db.METOD.MANUELL : db.METOD.INGEN) } : e,
+    );
+  }
   return obj;
 }
 
@@ -270,12 +297,30 @@ export async function readBackupFile(file, onProgress = () => {}) {
     if (!antalSidor || sidor.length !== antalSidor) {
       throw new BackupError(`Tentan "${name}" saknar sidinformation och verkar vara skadad.`);
     }
-    const { pdfBase64, pdfMime, ...meta } = e;
+    let facitData = null;
+    let facitPdf = null;
+    if (typeof e.facitPdfBase64 === 'string' && e.facitPdf) {
+      let fb;
+      try {
+        fb = base64ToBytes(e.facitPdfBase64);
+      } catch {
+        fb = null;
+      }
+      if (fb && looksLikePdf(fb)) {
+        facitData = fb.buffer.slice(fb.byteOffset, fb.byteOffset + fb.byteLength);
+        facitPdf = e.facitPdf;
+      } else {
+        warnings.push(`Facit-PDF:en för "${name}" var skadad och hoppades över.`);
+      }
+    }
+    const { pdfBase64, pdfMime, facitPdfBase64, ...meta } = e;
+    const exam = db.normalizeExam({ ...meta, facitPdf, namn: name, antalSidor, sidor, skapad: meta.skapad || new Date().toISOString() });
     exams.push({
-      exam: { ...meta, namn: name, antalSidor, sidor, skapad: meta.skapad || new Date().toISOString() },
+      exam,
       data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      facitData,
     });
-    examPages.set(e.id, antalSidor);
+    examPages.set(e.id, { antalSidor, facitSidor: exam.facitPdf ? exam.facitPdf.antalSidor : 0 });
   }
 
   const tasks = [];
@@ -285,7 +330,8 @@ export async function readBackupFile(file, onProgress = () => {}) {
       dropped++;
       continue;
     }
-    const n = db.normalizeTask(t, examPages.get(t.examId));
+    const pages = examPages.get(t.examId);
+    const n = db.normalizeTask(t, pages.antalSidor, pages.facitSidor);
     const lostRegions =
       (Array.isArray(t.regions) ? t.regions.length : 0) - n.regions.length +
       ((Array.isArray(t.solutionRegions) ? t.solutionRegions.length : 0) - n.solutionRegions.length);
