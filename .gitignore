@@ -1,0 +1,3 @@
+# Riktiga tentor för lokal testning checkas aldrig in (de kan vara upphovsrättsskyddade).
+tests/lokalt/
+/*.pdf
