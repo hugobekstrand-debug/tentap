@@ -215,7 +215,7 @@ export async function renderStudy(root, examIdParam = null) {
   function imageStack(exam, regions, alt, kind) {
     const stack = h('div', { class: 'img-stack' });
     regions.forEach((r, i) => {
-      const s = regionSizePt(r, exam.sidor);
+      const s = regionSizePt(r, exam);
       const img = h('img', { alt: i === 0 ? alt : `${alt}, del ${i + 1}`, draggable: 'false', decoding: 'async' });
       const frame = h(
         'div',
@@ -281,7 +281,7 @@ export async function renderStudy(root, examIdParam = null) {
     S.zoom = 1;
     stage.classList.remove('is-zoomed');
     const exam = examById.get(t.examId);
-    const sizes = [...t.regions, ...t.solutionRegions].map((r) => regionSizePt(r, exam.sidor).w);
+    const sizes = [...t.regions, ...t.solutionRegions].map((r) => regionSizePt(r, exam).w);
     sheetMaxPt = Math.max(...sizes, 1);
 
     caption.replaceChildren(

@@ -134,6 +134,7 @@ async function registerServiceWorker() {
     console.warn('Service worker kunde inte registreras', err);
     return;
   }
+  if (!reg) return;
   let userAskedToUpdate = false;
   const offerUpdate = (worker) => {
     showBanner('update', {

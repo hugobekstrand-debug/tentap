@@ -141,37 +141,52 @@ export async function inspectPdf(data) {
 /* Dokumentcache                                                       */
 /* ------------------------------------------------------------------ */
 
-const docs = new Map(); // examId -> Promise<PDFDocumentProxy>
+const docs = new Map(); // "examId|tenta" eller "examId|facit" -> Promise<PDFDocumentProxy>
 
-export function getDocument(examId) {
-  if (docs.has(examId)) {
-    const p = docs.get(examId);
-    docs.delete(examId);
-    docs.set(examId, p); // LRU: flytta sist
+/**
+ * Öppnar (och cachar) tentans PDF, eller dess separata facit-PDF.
+ * @param {'tenta'|'facit'} which
+ */
+export function getDocument(examId, which = 'tenta') {
+  const key = `${examId}|${which}`;
+  if (docs.has(key)) {
+    const p = docs.get(key);
+    docs.delete(key);
+    docs.set(key, p); // LRU: flytta sist
     return p;
   }
   const p = (async () => {
-    const data = await getPdfData(examId);
-    if (!data) throw new PdfError('missing', 'PDF:en för den här tentan saknas i lagringen.');
+    const data = await getPdfData(examId, which);
+    if (!data) {
+      throw new PdfError('missing', which === 'facit' ? 'Facit-PDF:en för den här tentan saknas i lagringen.' : 'PDF:en för den här tentan saknas i lagringen.');
+    }
     return openDocument(data);
   })();
-  docs.set(examId, p);
-  p.catch(() => docs.delete(examId));
+  docs.set(key, p);
+  p.catch(() => docs.delete(key));
   while (docs.size > MAX_OPEN_DOCS) {
-    const [oldId, oldP] = docs.entries().next().value;
-    docs.delete(oldId);
+    const [oldKey, oldP] = docs.entries().next().value;
+    docs.delete(oldKey);
     oldP.then((d) => d.destroy()).catch(() => {});
   }
   return p;
 }
 
+/** Öppnar en PDF direkt från data (utan cache), t.ex. vid igenkänning före sparande. */
+export function openPdfData(data) {
+  return openDocument(data);
+}
+
 /** Stäng och glöm en tentas dokument och bilder (t.ex. när tentan tas bort). */
-export function forgetExam(examId) {
-  const p = docs.get(examId);
-  docs.delete(examId);
-  p?.then((d) => d.destroy()).catch(() => {});
+export function forgetExam(examId, which = null) {
+  for (const w of which ? [which] : ['tenta', 'facit']) {
+    const key = `${examId}|${w}`;
+    const p = docs.get(key);
+    docs.delete(key);
+    p?.then((d) => d.destroy()).catch(() => {});
+  }
   for (const [key, entry] of imageCache) {
-    if (key.startsWith(examId + '|')) {
+    if (key.startsWith(examId + '|') && (!which || key.includes(`|${which}|`))) {
       URL.revokeObjectURL(entry.url);
       imageBytes -= entry.bytes;
       imageCache.delete(key);
@@ -238,9 +253,11 @@ const imageCache = new Map(); // key -> { url, bytes, width, height }
 let imageBytes = 0;
 const inflight = new Map();
 
+const docOf = (r) => (r.pdf === 'facit' ? 'facit' : 'tenta');
+
 function cacheKey(examId, r, pxPerPt) {
   const f = (n) => n.toFixed(5);
-  return `${examId}|${r.sida}|${f(r.x)}|${f(r.y)}|${f(r.w)}|${f(r.h)}|${pxPerPt.toFixed(3)}`;
+  return `${examId}|${docOf(r)}|${r.sida}|${f(r.x)}|${f(r.y)}|${f(r.w)}|${f(r.h)}|${pxPerPt.toFixed(3)}`;
 }
 
 function remember(key, entry) {
@@ -261,7 +278,7 @@ function remember(key, entry) {
 /**
  * Renderar ett utsnitt (region) av en sida till en bild.
  * @param {string} examId
- * @param {{sida:number,x:number,y:number,w:number,h:number}} region normaliserad
+ * @param {{sida:number,x:number,y:number,w:number,h:number,pdf?:'facit'}} region normaliserad
  * @param {number} pxPerPt pixlar per PDF-punkt (1 pt = 1/72 tum)
  * @returns {Promise<{url:string,width:number,height:number}>}
  */
@@ -275,7 +292,7 @@ export function regionImage(examId, region, pxPerPt) {
   }
   if (inflight.has(key)) return inflight.get(key);
   const p = (async () => {
-    const doc = await getDocument(examId);
+    const doc = await getDocument(examId, docOf(region));
     const page = await doc.getPage(region.sida);
     const base = page.getViewport({ scale: 1 });
     const cropW = region.w * base.width;
@@ -311,8 +328,18 @@ export function regionImage(examId, region, pxPerPt) {
   return p;
 }
 
-/** Regionens storlek i PDF-punkter. */
-export function regionSizePt(region, sidor) {
+/**
+ * Regionens storlek i PDF-punkter.
+ * @param {object} region
+ * @param {Array|object} sidorOrExam tentans sidor, eller hela tentan (då
+ *   används facit-PDF:ens sidor för regioner med pdf: "facit")
+ */
+export function regionSizePt(region, sidorOrExam) {
+  const sidor = Array.isArray(sidorOrExam)
+    ? sidorOrExam
+    : region.pdf === 'facit'
+      ? sidorOrExam?.facitPdf?.sidor
+      : sidorOrExam?.sidor;
   const s = sidor?.[region.sida - 1] || { w: 595, h: 842 };
   return { w: region.w * s.w, h: region.h * s.h };
 }

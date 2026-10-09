@@ -7,9 +7,16 @@
 
 import { STATUS, dayKey } from './db.js';
 
+const hasPoints = (t) => typeof t.poang === 'number' && Number.isFinite(t.poang) && t.poang > 0;
+const round2 = (n) => Math.round(n * 100) / 100;
+const pf = new Intl.NumberFormat('sv-SE', { maximumFractionDigits: 2 });
+
+/** Poäng med svensk decimalform: "1,5". */
+export const fmtPoints = (n) => pf.format(n);
+
 /** Uppgifter utan poäng väger 1. */
 export function weightOf(task) {
-  return Number.isInteger(task.poang) && task.poang > 0 ? task.poang : 1;
+  return hasPoints(task) ? task.poang : 1;
 }
 
 /** Procent som heltal: 100 bara när allt är klart, minst 1 så fort något är klart. */
@@ -50,13 +57,17 @@ export function progress(tasks, weighted = false) {
       r.doneWeight += w;
     }
     if (t.status === STATUS.SVAR) r.hard++;
-    if (Number.isInteger(t.poang) && t.poang > 0) {
+    if (hasPoints(t)) {
       r.points += t.poang;
       if (klar) r.pointsDone += t.poang;
     } else {
       r.unpointed++;
     }
   }
+  r.points = round2(r.points);
+  r.pointsDone = round2(r.pointsDone);
+  r.totalWeight = round2(r.totalWeight);
+  r.doneWeight = round2(r.doneWeight);
   r.remaining = r.count - r.doneCount;
   r.allDone = r.count > 0 && r.doneCount === r.count;
   r.pct = weighted
@@ -100,9 +111,9 @@ export function streak(log, now = new Date()) {
 /** Sammanfattning för markeringsläget: "7 uppgifter · 25 poäng". */
 export function markingSummary(tasks) {
   const n = tasks.length;
-  const points = tasks.reduce((s, t) => s + (t.poang || 0), 0);
+  const points = round2(tasks.reduce((s, t) => s + (t.poang || 0), 0));
   const unpointed = tasks.filter((t) => !t.poang).length;
-  let s = `${n} ${n === 1 ? 'uppgift' : 'uppgifter'} · ${points} poäng`;
+  let s = `${n} ${n === 1 ? 'uppgift' : 'uppgifter'} · ${fmtPoints(points)} poäng`;
   if (n && unpointed) s += ` (${unpointed} utan poäng)`;
   return s;
 }

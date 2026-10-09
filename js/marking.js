@@ -513,6 +513,7 @@ export async function renderMarking(root, examId) {
     for (const t of S.tasks) {
       for (const kind of [TASK, SOL]) {
         t[kind].forEach((r, i) => {
+          if (r.pdf === 'facit') return; // ligger i den separata facit-PDF:en, inte på de här sidorna
           const p = pages[r.sida - 1];
           if (!p) return;
           const selected = !!S.sel && S.sel.taskId === t.id && S.sel.kind === kind && S.sel.index === i;
@@ -1016,9 +1017,8 @@ export async function renderMarking(root, examId) {
     const pointsInput = h('input', {
       class: 'input input-short',
       type: 'text',
-      inputmode: 'numeric',
-      pattern: '[0-9]*',
-      maxlength: '4',
+      inputmode: 'decimal',
+      maxlength: '6',
       autocomplete: 'off',
       placeholder: '–',
       enterkeyhint: 'done',
@@ -1026,7 +1026,7 @@ export async function renderMarking(root, examId) {
     const taskSelect = h('select', { class: 'input' }, taskOptions((prev || S.tasks[S.tasks.length - 1])?.id));
     const error = h('p', { class: 'field-error', hidden: true, 'aria-live': 'polite' });
 
-    const taskFields = h('div', { class: 'panel-fields' }, field('Etikett', labelInput), field('Poäng', pointsInput, 'Valfritt, heltal'));
+    const taskFields = h('div', { class: 'panel-fields' }, field('Etikett', labelInput), field('Poäng', pointsInput, 'Valfritt'));
     const solFields = h('div', { class: 'panel-fields' }, field('Facit till', taskSelect));
 
     const btnTask = h('button', { type: 'button', class: 'seg-btn', onclick: () => setKind(TASK) }, 'Uppgift');
@@ -1071,7 +1071,7 @@ export async function renderMarking(root, examId) {
         const rawPoints = pointsInput.value.trim();
         const poang = db.normalizePoang(rawPoints);
         if (!etikett) return showError('Skriv en etikett, t.ex. "Problem 3".', labelInput);
-        if (rawPoints && poang === null) return showError('Poäng ska vara ett heltal, t.ex. 3. Lämna tomt om du inte vet.', pointsInput);
+        if (rawPoints && poang === null) return showError('Poäng ska vara ett tal, t.ex. 3 eller 1,5. Lämna tomt om du inte vet.', pointsInput);
         createTask(etikett, poang, S.pending.region);
       } else {
         const t = taskById(taskSelect.value);
@@ -1154,9 +1154,8 @@ export async function renderMarking(root, examId) {
       const pointsInput = h('input', {
         class: 'input input-short',
         type: 'text',
-        inputmode: 'numeric',
-        pattern: '[0-9]*',
-        maxlength: '4',
+        inputmode: 'decimal',
+        maxlength: '6',
         value: t.poang ?? '',
         placeholder: '–',
         autocomplete: 'off',
@@ -1179,7 +1178,7 @@ export async function renderMarking(root, examId) {
         const raw = pointsInput.value.trim();
         const v = db.normalizePoang(raw);
         if (raw && v === null) {
-          error.textContent = 'Poäng ska vara ett heltal, t.ex. 3.';
+          error.textContent = 'Poäng ska vara ett tal, t.ex. 3 eller 1,5.';
           error.hidden = false;
           return;
         }
@@ -1384,7 +1383,7 @@ export async function renderMarking(root, examId) {
   async function loadThumb(t, img, thumb) {
     const r = t.regions[0];
     if (!r) return;
-    const size = regionSizePt(r, exam.sidor);
+    const size = regionSizePt(r, exam);
     const pxPerPt = Math.max(0.15, (72 * deviceScale()) / Math.max(1, size.w));
     try {
       const res = await regionImage(exam.id, r, pxPerPt);
@@ -1421,11 +1420,11 @@ export async function renderMarking(root, examId) {
   async function changePoints(id) {
     const t = taskById(id);
     if (!t) return;
-    const v = await promptDialog({ title: 'Ändra poäng', label: 'Poäng (heltal)', value: t.poang ?? '', hint: 'Skriv 0 för att ta bort poängen.' });
+    const v = await promptDialog({ title: 'Ändra poäng', label: 'Poäng', value: t.poang ?? '', hint: 'Till exempel 3 eller 1,5. Skriv 0 för att ta bort poängen.' });
     if (v === null) return;
     const p = v === '0' ? null : db.normalizePoang(v);
     if (v !== '0' && p === null) {
-      toast('Poäng ska vara ett heltal, t.ex. 3.', { tone: 'error' });
+      toast('Poäng ska vara ett tal, t.ex. 3 eller 1,5.', { tone: 'error' });
       return;
     }
     mutate('Ändra poäng', () => (taskById(id).poang = p));
