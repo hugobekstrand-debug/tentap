@@ -139,18 +139,81 @@ export function icon(name, { size = 20, label = null, cls = '' } = {}) {
   return t.content.firstChild;
 }
 
-/** Appens logotyp (samma motiv som ikonerna). */
+/** Appens symbol: orange rundad kvadrat med en vit bock som delvis bildar en cirkel. */
 export function logo(size = 28) {
   const t = document.createElement('template');
   t.innerHTML = `<svg class="logo" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
     <rect width="64" height="64" rx="15" class="logo-bg"/>
-    <rect x="16" y="13" width="32" height="38" rx="5" class="logo-paper"/>
-    <rect x="22" y="21" width="20" height="3.5" rx="1.75" class="logo-line"/>
-    <rect x="22" y="28" width="14" height="3.5" rx="1.75" class="logo-line"/>
-    <rect x="22" y="40" width="20" height="4.5" rx="2.25" class="logo-track"/>
-    <rect x="22" y="40" width="13" height="4.5" rx="2.25" class="logo-fill"/>
+    <path d="M45.4 26.8A17 17 0 1 1 37.2 18.6M22.5 34.5 29.5 41.5 50 17" class="logo-mark"/>
   </svg>`;
   return t.content.firstChild;
+}
+
+/** Symbol + ordmärket "Tentaplugget". */
+export function brand(size = 32) {
+  return h('span', { class: 'brand' }, logo(size), h('span', { class: 'brand-name' }, 'Tentaplugget'));
+}
+
+/**
+ * Stor progressring med count-up. Returnerar { el, set(pct, label) }.
+ * Animeras från föregående värde (eller 0) till nytt; respekterar
+ * prefers-reduced-motion.
+ */
+export function progressRing({ size = 200, stroke = 14, label = 'Progress' } = {}) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const t = document.createElement('template');
+  t.innerHTML = `<svg class="ring-svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true" focusable="false">
+    <circle class="ring-track" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${stroke}" fill="none"/>
+    <circle class="ring-fill" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${stroke}" fill="none"
+      stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c}" transform="rotate(-90 ${size / 2} ${size / 2})"/>
+  </svg>`;
+  const svg = t.content.firstChild;
+  const fill = svg.querySelector('.ring-fill');
+  const num = h('span', { class: 'ring-num' }, '0 %');
+  const sub = h('span', { class: 'ring-sub' });
+  const el = h(
+    'div',
+    { class: 'ring', role: 'progressbar', 'aria-label': label, 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0', 'aria-live': 'polite' },
+    svg,
+    h('span', { class: 'ring-center' }, num, sub),
+  );
+  let shown = 0;
+  let raf = 0;
+  return {
+    el,
+    /** Visa ett värde direkt, utan animation (t.ex. det som visades förra gången). */
+    jump(pct) {
+      shown = pct;
+      fill.style.strokeDashoffset = String(c * (1 - pct / 100));
+      num.textContent = `${Math.round(pct)} %`;
+    },
+    set(pct, subText = '', valueText = '') {
+      cancelAnimationFrame(raf);
+      el.setAttribute('aria-valuenow', String(pct));
+      if (valueText) el.setAttribute('aria-valuetext', valueText);
+      sub.textContent = subText;
+      const draw = (v) => {
+        fill.style.strokeDashoffset = String(c * (1 - v / 100));
+        num.textContent = `${Math.round(v)} %`;
+      };
+      const from = shown;
+      shown = pct;
+      if (mq.reducedMotion() || from === pct) {
+        draw(pct);
+        return;
+      }
+      const start = performance.now();
+      const dur = 900;
+      const step = (now) => {
+        const k = Math.min(1, (now - start) / dur);
+        const e = 1 - Math.pow(1 - k, 3);
+        draw(from + (pct - from) * e);
+        if (k < 1) raf = requestAnimationFrame(step);
+      };
+      raf = requestAnimationFrame(step);
+    },
+  };
 }
 
 /**
@@ -287,6 +350,7 @@ export function toast(message, { actionLabel = null, onAction = null, duration =
     tone === 'ok' ? icon('check', { size: 18, cls: 'toast-icon' }) : null,
     tone === 'hard' ? icon('flag', { size: 18, cls: 'toast-icon' }) : null,
     tone === 'error' ? icon('alert', { size: 18, cls: 'toast-icon' }) : null,
+    tone === 'milestone' ? icon('sparkles', { size: 18, cls: 'toast-icon' }) : null,
     h('span', { class: 'toast-msg' }, message),
   );
   if (actionLabel && onAction) {

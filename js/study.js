@@ -13,7 +13,7 @@
 
 import * as db from './db.js';
 import { regionImage, regionSizePt, deviceScale } from './pdf.js';
-import { progress, progressLabel, stableHash } from './stats.js';
+import { progress, progressLabel, stableHash, fmtPoints } from './stats.js';
 import {
   h,
   icon,
@@ -27,6 +27,7 @@ import {
   isTypingTarget,
   announce,
   plural,
+  badge,
 } from './ui.js';
 
 const { KLAR, SVAR, EJ_GJORD } = db.STATUS;
@@ -108,12 +109,7 @@ export async function renderStudy(root, examIdParam = null) {
     barFill,
   );
   const progressText = h('span', { class: 'study-progress-text', 'aria-live': 'polite' });
-  const helpBtn = h(
-    'button',
-    { type: 'button', class: 'btn-icon btn-quiet only-fine', 'aria-label': 'Kortkommandon', title: 'Kortkommandon (?)', onclick: () => showHelp() },
-    icon('keyboard'),
-  );
-  const moreBtn = h('button', { type: 'button', class: 'btn-icon btn-quiet', 'aria-label': 'Inställningar för pluggläget', title: 'Inställningar' }, icon('sliders'));
+  const moreBtn = h('button', { type: 'button', class: 'btn-icon btn-quiet', 'aria-label': 'Fler val för pluggläget', title: 'Fler val' }, icon('more'));
   moreBtn.addEventListener('click', () => openStudyMenu());
 
   const topbar = h(
@@ -122,45 +118,42 @@ export async function renderStudy(root, examIdParam = null) {
     h(
       'button',
       { type: 'button', class: 'btn-icon btn-quiet', 'aria-label': 'Lämna pluggläget', title: 'Lämna (Esc)', onclick: () => navigate('#/') },
-      icon('back'),
+      icon('close'),
     ),
     h('div', { class: 'study-progress' }, bar, progressText),
-    helpBtn,
     moreBtn,
   );
-
-  const caption = h('p', { class: 'task-caption' });
-  const sheet = h('article', { class: 'task-sheet' });
-  const zoomWrap = h('div', { class: 'study-zoom' }, sheet);
-  const stage = h('div', { class: 'study-stage', tabindex: '0', 'aria-label': 'Uppgift' }, caption, zoomWrap);
 
   const kbd = (k) => h('kbd', { class: 'kbd only-fine', 'aria-hidden': 'true' }, k);
   const prevBtn = h(
     'button',
-    { type: 'button', class: 'btn btn-quiet prev-btn', 'aria-label': 'Föregående', title: 'Föregående (←)', onclick: () => prev() },
-    icon('chevronLeft', { size: 18 }),
-    h('span', { class: 'prev-label', 'aria-hidden': 'true' }, 'Föregående'),
+    { type: 'button', class: 'btn-icon btn-quiet prev-btn', 'aria-label': 'Föregående uppgift', title: 'Föregående (←)', onclick: () => prev() },
+    icon('chevronLeft'),
   );
-  const skipBtn = h('button', { type: 'button', class: 'btn btn-quiet', onclick: () => skip() }, h('span', null, 'Hoppa över'), icon('skip', { size: 18 }), kbd('H'));
-  const facitLabel = h('span', null, 'Visa facit');
-  const facitBtn = h('button', { type: 'button', class: 'btn btn-secondary facit-btn', 'aria-expanded': 'false', onclick: () => toggleFacit() }, icon('eye', { size: 18 }), facitLabel, kbd('F'));
-  const hardBtn = h('button', { type: 'button', class: 'btn btn-hard btn-lg', onclick: () => act('svar') }, icon('flag', { size: 20 }), h('span', null, 'Svår, kom tillbaka'), kbd('S'));
-  const doneBtn = h('button', { type: 'button', class: 'btn btn-ok btn-lg', onclick: () => act('klar') }, icon('check', { size: 20 }), h('span', null, 'Klar'), kbd('K'));
+  const skipBtn = h(
+    'button',
+    { type: 'button', class: 'btn btn-quiet btn-sm skip-btn', title: 'Hoppa över (H)', onclick: () => skip() },
+    'Hoppa över',
+    icon('chevronRight', { size: 18 }),
+  );
+  const captionText = h('span', { class: 'task-caption-text' });
+  const captionChips = h('span', { class: 'task-caption-chips' });
+  const caption = h('div', { class: 'task-caption' }, prevBtn, h('p', { class: 'task-caption-main' }, captionText, captionChips), skipBtn);
+  const sheet = h('article', { class: 'task-sheet' });
+  const zoomWrap = h('div', { class: 'study-zoom' }, sheet);
+  const stage = h('div', { class: 'study-stage', tabindex: '0', 'aria-label': 'Uppgift' }, zoomWrap);
 
-  const bottom = h(
-    'footer',
-    { class: 'study-bar' },
-    h(
-      'div',
-      { class: 'study-bar-inner' },
-      h('div', { class: 'study-bar-secondary' }, prevBtn, facitBtn, skipBtn),
-      h('div', { class: 'study-bar-primary' }, hardBtn, doneBtn),
-    ),
-  );
+  const facitLabel = h('span', null, 'Visa facit');
+  const facitIcon = h('span', { class: 'facit-btn-icon' }, icon('eye', { size: 20 }));
+  const facitBtn = h('button', { type: 'button', class: 'btn btn-ghost facit-btn', 'aria-expanded': 'false', onclick: () => toggleFacit() }, facitIcon, facitLabel, kbd('F'));
+  const hardBtn = h('button', { type: 'button', class: 'btn btn-hard hard-btn', onclick: () => act('svar') }, icon('flag', { size: 20 }), h('span', null, 'Svår'), kbd('S'));
+  const doneBtn = h('button', { type: 'button', class: 'btn btn-primary done-btn', onclick: () => act('klar') }, icon('check', { size: 22 }), h('span', null, 'Klar'), kbd('K'));
+
+  const bottom = h('footer', { class: 'study-bar' }, h('div', { class: 'study-bar-inner' }, hardBtn, facitBtn, doneBtn));
 
   const celebrateEl = h('section', { class: 'celebrate', hidden: true, 'aria-labelledby': 'celebrate-title' });
 
-  view.append(topbar, stage, bottom, celebrateEl);
+  view.append(topbar, caption, stage, bottom, celebrateEl);
   root.append(view);
 
   /* ------------------------------------------------------------------ */
@@ -284,11 +277,11 @@ export async function renderStudy(root, examIdParam = null) {
     const sizes = [...t.regions, ...t.solutionRegions].map((r) => regionSizePt(r, exam).w);
     sheetMaxPt = Math.max(...sizes, 1);
 
-    caption.replaceChildren(
+    captionText.textContent = `${exams.length > 1 ? `${exam.namn} · ` : ''}${t.etikett}${t.poang ? ` · ${fmtPoints(t.poang)} p` : ''}`;
+    captionChips.replaceChildren(
       ...[
-        h('span', { class: 'task-caption-text' }, `${exam.namn} · ${t.etikett}${t.poang ? ` · ${t.poang} p` : ''}`),
-        t.status === SVAR ? h('span', { class: 'chip chip--hard' }, icon('flag', { size: 14 }), 'Svår sedan tidigare') : null,
-        t.status === KLAR ? h('span', { class: 'chip chip--ok' }, icon('check', { size: 14 }), 'Klar') : null,
+        t.status === SVAR ? badge('Svår sedan tidigare', { tone: 'hard', iconName: 'flag' }) : null,
+        t.status === KLAR ? badge('Klar', { tone: 'ok', iconName: 'check' }) : null,
       ].filter(Boolean),
     );
 
@@ -308,18 +301,20 @@ export async function renderStudy(root, examIdParam = null) {
     stage.scrollTop = 0;
     stage.scrollLeft = 0;
     if (!mq.reducedMotion()) {
-      sheet.classList.remove('is-entering');
+      sheet.classList.remove('is-entering', 'is-leaving');
       void sheet.offsetWidth;
       sheet.classList.add('is-entering');
     }
 
-    facitBtn.hidden = false;
-    facitBtn.style.visibility = t.solutionRegions.length ? '' : 'hidden';
-    facitBtn.disabled = !t.solutionRegions.length;
-    facitBtn.setAttribute('aria-controls', t.solutionRegions.length ? 'facit-section' : '');
+    // "Visa facit" finns bara när uppgiften har facit.
+    const hasFacit = t.solutionRegions.length > 0;
+    facitBtn.hidden = !hasFacit;
+    bottom.classList.toggle('has-facit', hasFacit);
+    if (hasFacit) facitBtn.setAttribute('aria-controls', 'facit-section');
+    else facitBtn.removeAttribute('aria-controls');
     facitBtn.setAttribute('aria-expanded', 'false');
     facitLabel.textContent = 'Visa facit';
-    facitBtn.firstChild.replaceWith(icon('eye', { size: 18 }));
+    facitIcon.replaceChildren(icon('eye', { size: 20 }));
     prevBtn.disabled = !S.history.length;
 
     S.lockUntil = Date.now() + ACTION_COOLDOWN_MS;
@@ -354,7 +349,7 @@ export async function renderStudy(root, examIdParam = null) {
     facitSection.hidden = !S.facitOpen;
     facitBtn.setAttribute('aria-expanded', String(S.facitOpen));
     facitLabel.textContent = S.facitOpen ? 'Dölj facit' : 'Visa facit';
-    facitBtn.firstChild.replaceWith(icon(S.facitOpen ? 'eyeOff' : 'eye', { size: 18 }));
+    facitIcon.replaceChildren(icon(S.facitOpen ? 'eyeOff' : 'eye', { size: 20 }));
     if (S.facitOpen) {
       requestAnimationFrame(() => {
         const top = facitSection.getBoundingClientRect().top - stage.getBoundingClientRect().top + stage.scrollTop - 12;
@@ -378,6 +373,32 @@ export async function renderStudy(root, examIdParam = null) {
   function goToQueueHead() {
     if (!S.queue.length) celebrate();
     else showTask(S.queue[0]);
+  }
+
+  /** Uppgiften glider ut åt vänster (200 ms), sedan kommer nästa in från höger. */
+  function leaveThen(fn) {
+    if (mq.reducedMotion()) {
+      fn();
+      return;
+    }
+    sheet.classList.remove('is-entering');
+    sheet.classList.add('is-leaving');
+    setTimeout(() => {
+      if (destroyed) return;
+      sheet.classList.remove('is-leaving');
+      fn();
+    }, 200);
+  }
+
+  const MILSTOLPAR = [
+    [75, '75 % klart – snart i mål.'],
+    [50, 'Halvvägs. Fortsätt så.'],
+    [25, '25 % klart. Bra start.'],
+  ];
+  /** Text för en milstolpe som passerades nu (25/50/75 %), annars null. */
+  function milestone(before, after) {
+    for (const [m, text] of MILSTOLPAR) if (before < m && after >= m && after < 100) return text;
+    return null;
   }
 
   async function act(kind) {
@@ -404,11 +425,15 @@ export async function renderStudy(root, examIdParam = null) {
       S.queue.push(id);
     }
     // Optimistiskt: uppdatera direkt.
+    const pctBefore = progress([...S.tasks.values()], S.settings.viktaEfterPoang).pct;
     S.tasks.set(id, next);
     S.history.push(id);
     S.forward = [];
-    updateProgress();
-    goToQueueHead();
+    const pAfter = updateProgress();
+    if (kind === 'klar') navigator.vibrate?.(10);
+    S.lockUntil = Date.now() + ACTION_COOLDOWN_MS + 200;
+    leaveThen(() => goToQueueHead());
+    const reached = kind === 'klar' ? milestone(pctBefore, pAfter.pct) : null;
 
     let res;
     try {
@@ -432,12 +457,12 @@ export async function renderStudy(root, examIdParam = null) {
     const onlyOneLeft = kind === 'svar' && S.queue.length === 1;
     const msg =
       kind === 'klar'
-        ? 'Markerad som klar'
+        ? reached || 'Markerad som klar'
         : onlyOneLeft
           ? 'Markerad som svår. Det är den enda kvar – ta den igen när du är redo.'
           : 'Markerad som svår – den kommer tillbaka senare';
     toast(msg, {
-      tone: kind === 'klar' ? 'ok' : 'hard',
+      tone: kind === 'klar' ? (reached ? 'milestone' : 'ok') : 'hard',
       actionLabel: 'Ångra',
       onAction: () => undoAction(undoSnap),
     });
@@ -515,32 +540,45 @@ export async function renderStudy(root, examIdParam = null) {
     const p = updateProgress();
     const wasHard = all.filter((t) => t.svarAntal > 0).length;
     stage.hidden = true;
+    caption.hidden = true;
     bottom.hidden = true;
+    topbar.hidden = true;
+    view.classList.add('is-celebrating');
     const scopeName = examIdParam ? examById.get(examIdParam)?.namn : exams.length === 1 ? exams[0].namn : `${exams.length} tentor`;
+    const mark = document.createElement('template');
+    mark.innerHTML = `<svg class="celebrate-check" viewBox="0 0 120 120" width="120" height="120" aria-hidden="true" focusable="false">
+      <circle class="celebrate-ring" cx="60" cy="60" r="50" fill="none" stroke-width="7"/>
+      <path class="celebrate-tick" d="M38 62 53 77 84 44" fill="none" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+    const confetti = h('canvas', { class: 'confetti', 'aria-hidden': 'true' });
     celebrateEl.replaceChildren(
+      confetti,
       h(
         'div',
         { class: 'celebrate-inner' },
-        h('div', { class: 'celebrate-mark', 'aria-hidden': 'true' }, icon('checkCircle', { size: 56 })),
-        h('h1', { class: 'celebrate-title', id: 'celebrate-title', tabindex: '-1' }, '100 % – alla uppgifter klara'),
-        h('p', { class: 'celebrate-lead' }, `Snyggt jobbat. Du har gått igenom allt i ${scopeName}. 🎉`),
+        mark.content.firstChild,
+        h('p', { class: 'celebrate-pct', 'aria-hidden': 'true' }, '100 %'),
+        h('h1', { class: 'celebrate-title', id: 'celebrate-title', tabindex: '-1' }, 'Alla uppgifter klara'),
+        h('p', { class: 'celebrate-lead' }, `Snyggt jobbat. Du har gått igenom allt i ${scopeName}.`),
         h(
           'dl',
           { class: 'celebrate-stats' },
           h('div', null, h('dt', null, 'Uppgifter'), h('dd', null, String(p.count))),
-          p.points ? h('div', null, h('dt', null, 'Poäng'), h('dd', null, String(p.points))) : null,
-          h('div', null, h('dt', null, 'Har varit svåra'), h('dd', null, String(wasHard))),
+          p.points ? h('div', null, h('dt', null, 'Poäng'), h('dd', null, fmtPoints(p.points))) : null,
+          h('div', null, h('dt', null, 'Var svåra'), h('dd', null, String(wasHard))),
         ),
         h(
           'div',
           { class: 'celebrate-actions' },
-          h('button', { type: 'button', class: 'btn btn-primary btn-lg', onclick: () => navigate('#/') }, 'Tillbaka till biblioteket'),
-          h('button', { type: 'button', class: 'btn btn-quiet', onclick: () => resetAll() }, icon('refresh', { size: 18 }), 'Nollställ framsteg'),
+          h('button', { type: 'button', class: 'btn btn-lg celebrate-primary', onclick: () => navigate('#/') }, 'Till startsidan'),
+          h('button', { type: 'button', class: 'btn celebrate-ghost', onclick: () => resetAll() }, icon('refresh', { size: 18 }), 'Nollställ och plugga igen'),
         ),
       ),
     );
     celebrateEl.hidden = false;
     celebrateEl.querySelector('h1').focus({ preventScroll: true });
+    announce('100 procent. Alla uppgifter klara.');
+    if (!mq.reducedMotion()) runConfetti(confetti);
     db.getSettings()
       .then((s) => {
         const map = { ...(s.senastOppnadUppgift || {}) };
@@ -550,12 +588,60 @@ export async function renderStudy(root, examIdParam = null) {
       .catch(() => {});
   }
 
+  /** Återhållen konfetti på canvas, högst 1,5 s. Färgerna kommer från CSS-variablerna. */
+  function runConfetti(canvas) {
+    const rect = celebrateEl.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const css = getComputedStyle(celebrateEl);
+    const colors = ['--c-confetti-1', '--c-confetti-2', '--c-confetti-3'].map((v) => css.getPropertyValue(v).trim()).filter(Boolean);
+    const pieces = Array.from({ length: 70 }, () => ({
+      x: rect.width / 2 + (Math.random() - 0.5) * rect.width * 0.3,
+      y: rect.height * 0.32,
+      vx: (Math.random() - 0.5) * 9,
+      vy: -Math.random() * 9 - 3,
+      r: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.3,
+      w: 5 + Math.random() * 5,
+      h: 8 + Math.random() * 6,
+      c: colors[Math.floor(Math.random() * colors.length)],
+    }));
+    const start = performance.now();
+    const tick = (now) => {
+      const t = now - start;
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      if (t > 1500 || destroyed || !S.celebrating) return;
+      ctx.globalAlpha = t > 1100 ? Math.max(0, (1500 - t) / 400) : 1;
+      for (const q of pieces) {
+        q.vy += 0.32;
+        q.x += q.vx;
+        q.y += q.vy;
+        q.r += q.vr;
+        ctx.save();
+        ctx.translate(q.x, q.y);
+        ctx.rotate(q.r);
+        ctx.fillStyle = q.c;
+        ctx.fillRect(-q.w / 2, -q.h / 2, q.w, q.h);
+        ctx.restore();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
   function hideCelebrate() {
     if (!S.celebrating) return;
     S.celebrating = false;
     celebrateEl.hidden = true;
+    celebrateEl.replaceChildren();
+    view.classList.remove('is-celebrating');
     stage.hidden = false;
+    caption.hidden = false;
     bottom.hidden = false;
+    topbar.hidden = false;
   }
 
   async function resetAll() {
@@ -622,6 +708,7 @@ export async function renderStudy(root, examIdParam = null) {
           },
         })),
         { separator: true },
+        { label: 'Föregående uppgift', icon: 'chevronLeft', disabled: !S.history.length, onSelect: () => prev() },
         { label: 'Kortkommandon', icon: 'keyboard', onSelect: () => showHelp() },
       ],
       { label: 'Inställningar för pluggläget' },
@@ -702,7 +789,8 @@ export async function renderStudy(root, examIdParam = null) {
   if (last && S.queue.includes(last)) S.queue = [last, ...S.queue.filter((x) => x !== last)];
   updateProgress();
   goToQueueHead();
-  if (!S.celebrating) stage.focus({ preventScroll: true });
+  // Fokus på bildytan (piltangenter/mellanslag skrollar), utan att rita en fokusram vid start.
+  if (!S.celebrating) stage.focus({ preventScroll: true, focusVisible: false });
 
   return {
     destroy() {

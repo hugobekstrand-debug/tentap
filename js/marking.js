@@ -103,7 +103,7 @@ export async function renderMarking(root, examId, focusTaskId = null) {
       redoBtn,
       h(
         'button',
-        { type: 'button', class: 'btn btn-primary btn-done', onclick: () => finish() },
+        { type: 'button', class: 'btn btn-primary btn-sm btn-done', onclick: () => finish() },
         h('span', { class: 'only-wide' }, 'Klar med markering'),
         h('span', { class: 'only-narrow' }, 'Klar'),
       ),
