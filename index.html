@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="sv">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Tentaplugget</title>
+    <meta name="description" content="Plugga gamla tentor en uppgift i taget, med en progress-bar som når 100 % när allt är löst." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f5f5f2" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#131417" media="(prefers-color-scheme: dark)" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Tentaplugget" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <script>
+      // Sätt valt tema innan sidan ritas (undviker blink). Källan är IndexedDB;
+      // localStorage är bara en spegel för snabb start.
+      try {
+        var t = localStorage.getItem('tentaplugget-tema');
+        if (t === 'ljust') document.documentElement.dataset.theme = 'light';
+        else if (t === 'mörkt') document.documentElement.dataset.theme = 'dark';
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="./css/styles.css" />
+    <script type="module" src="./js/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#app">Hoppa till innehållet</a>
+    <div id="banners" class="banners" role="region" aria-label="Meddelanden"></div>
+    <main id="app" class="app" tabindex="-1">
+      <div class="boot" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <p>Laddar Tentaplugget…</p>
+      </div>
+    </main>
+    <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+    <div id="sr-status" class="visually-hidden" aria-live="polite"></div>
+    <noscript>
+      <p class="noscript">Tentaplugget behöver JavaScript. Slå på JavaScript i webbläsaren och ladda om sidan.</p>
+    </noscript>
+  </body>
+</html>
