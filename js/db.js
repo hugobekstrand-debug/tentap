@@ -646,7 +646,8 @@ export async function applyExtraction(examId, newTasks, extraktion) {
         // Det cachade AI-svaret följer med, så att samma tenta aldrig faktureras två gånger.
         rasvar: extraktion.rasvar ?? prev.extraktion.rasvar ?? null,
       },
-      foregaendeUppgifter: { tidpunkt: now, extraktion: { ...prev.extraktion, rasvar: null }, uppgifter: existing },
+      // Ögonblicksbild för Ångra (bara om det fanns något att ångra till).
+      foregaendeUppgifter: existing.length ? { tidpunkt: now, extraktion: { ...prev.extraktion, rasvar: null }, uppgifter: existing } : null,
       andrad: now,
     };
     exams.put(next);

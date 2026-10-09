@@ -116,6 +116,16 @@ const P = {
   spinner: '<path d="M21 12a9 9 0 1 1-6.2-8.6"/>',
   keyboard: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M9 16h6"/>',
   calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  dot: '<circle cx="12" cy="12" r="3.5"/>',
+  sparkles: '<path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0l1.58 6.14a2 2 0 0 0 1.44 1.44l6.14 1.58a.5.5 0 0 1 0 .96l-6.14 1.58a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>',
+  key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3"/><path d="m16 7 3 3"/><path d="m19 4 2 2"/>',
+  scan: '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
+  merge: '<path d="M6 3v6a6 6 0 0 0 6 6h0a6 6 0 0 1 6 6"/><path d="M18 3v6a6 6 0 0 1-6 6"/>',
+  split: '<path d="M3 12h18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/>',
+  play: '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z"/>',
+  fileText: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/>',
+  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
 };
 
 /** Returnerar ett <svg>-element. label ger aria-label, annars aria-hidden. */
@@ -124,7 +134,7 @@ export function icon(name, { size = 20, label = null, cls = '' } = {}) {
   const a11y = label ? `role="img" aria-label="${label}"` : 'aria-hidden="true"';
   t.innerHTML =
     `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" ` +
-    `stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ` +
+    `stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" ` +
     `focusable="false" ${a11y}>${P[name] || ''}</svg>`;
   return t.content.firstChild;
 }
@@ -141,6 +151,70 @@ export function logo(size = 28) {
     <rect x="22" y="40" width="13" height="4.5" rx="2.25" class="logo-fill"/>
   </svg>`;
   return t.content.firstChild;
+}
+
+/**
+ * Steg-indikator ("Läser tentan → Hittar uppgifter → …"). Ikon + text, så
+ * att färg aldrig bär status ensam.
+ * @param {Array<{id:string,label:string}>} steps
+ * @param {string|null} currentId aktuellt steg ("done" = allt klart)
+ */
+export function stepper(steps, currentId, { label = 'Förlopp' } = {}) {
+  const idx = Math.max(0, steps.findIndex((s) => s.id === currentId));
+  const allDone = currentId === steps[steps.length - 1].id;
+  return h(
+    'ol',
+    { class: 'stepper', 'aria-label': label },
+    steps.map((s, i) => {
+      const state = allDone || i < idx ? 'done' : i === idx ? 'active' : 'todo';
+      return h(
+        'li',
+        { class: `stepper-item is-${state}`, 'aria-current': state === 'active' ? 'step' : null },
+        icon(state === 'done' ? 'check' : state === 'active' ? 'spinner' : 'dot', {
+          size: 16,
+          cls: state === 'active' ? 'spin' : '',
+        }),
+        h('span', null, s.label),
+        state === 'done' ? h('span', { class: 'visually-hidden' }, ' (klart)') : null,
+      );
+    }),
+  );
+}
+
+/**
+ * Bricka ("Säker", "Behöver koll", "Klar", "Svår", "Premium"). Alltid ikon +
+ * text när den bär status, så att färg aldrig är ensam bärare.
+ * @param {'neutral'|'ok'|'warn'|'hard'|'premium'|'error'} tone
+ */
+export function badge(text, { tone = 'neutral', iconName = null } = {}) {
+  return h('span', { class: `badge badge--${tone}` }, iconName ? icon(iconName, { size: 14 }) : null, h('span', null, text));
+}
+
+/**
+ * Tomvy: ikon, rubrik, förklaring och handlingar.
+ * actions: [{label, variant, onClick, iconName}]
+ */
+export function emptyState({ iconName = 'info', title, text, actions = [], tone = 'neutral', headingLevel = 'h1' }) {
+  return h(
+    'div',
+    { class: 'view view-empty' },
+    h(
+      'div',
+      { class: `empty-state empty-state--${tone}` },
+      h('span', { class: 'empty-icon', 'aria-hidden': 'true' }, icon(iconName, { size: 28 })),
+      h(headingLevel, { tabindex: '-1' }, title),
+      text ? (Array.isArray(text) ? text.map((t) => h('p', null, t)) : h('p', null, text)) : null,
+      actions.length
+        ? h(
+            'div',
+            { class: 'empty-actions' },
+            actions.map((a) =>
+              h('button', { type: 'button', class: `btn btn-${a.variant || 'secondary'}`, onclick: a.onClick }, a.iconName ? icon(a.iconName, { size: 18 }) : null, a.label),
+            ),
+          )
+        : null,
+    ),
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -480,7 +554,7 @@ let openMenuApi = null;
 
 /**
  * Öppnar en meny vid anchor. items:
- *  { label, icon, onSelect, danger, disabled }
+ *  { label, icon, onSelect, danger, disabled, badge }
  *  { label, checked:boolean, onSelect }            (kryssruta)
  *  { label, radio:true, checked, onSelect }        (radioval)
  *  { separator:true } | { heading:'Text' }
@@ -491,6 +565,7 @@ export function openMenu(anchor, items, { label = 'Fler val' } = {}) {
   const menu = h('div', { class: 'menu', role: 'menu', 'aria-label': label });
   const buttons = [];
   for (const it of items) {
+    if (!it) continue;
     if (it.separator) {
       menu.append(h('div', { class: 'menu-sep', role: 'separator' }));
       continue;
@@ -521,6 +596,7 @@ export function openMenu(anchor, items, { label = 'Fler val' } = {}) {
           ? icon(it.icon, { size: 18 })
           : null,
       h('span', { class: 'menu-label' }, it.label),
+      it.badge ? badge(it.badge, { tone: 'premium' }) : null,
     );
     buttons.push(btn);
     menu.append(btn);

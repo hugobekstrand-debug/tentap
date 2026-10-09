@@ -5,7 +5,8 @@
 
 import * as db from './db.js';
 import { inspectPdf, forgetExam, PdfError } from './pdf.js';
-import { progress, progressLabel, todayCount, streak } from './stats.js';
+import { progress, progressLabel, todayCount, streak, fmtPoints } from './stats.js';
+import { recognizeAndSave, STEG } from './extract.js';
 import {
   h,
   icon,
@@ -21,8 +22,11 @@ import {
   daysSince,
   showBanner,
   hideBanner,
+  stepper,
 } from './ui.js';
 import { runExport, runImport } from './backup.js';
+import { rerunTextRecognition, addFacitPdf } from './analysis.js';
+import { runAiAnalysis, hasApiKey } from './premium.js';
 import { APP_VERSION } from './version.js';
 
 const LARGE_PDF_BYTES = 60 * 1024 * 1024;
@@ -46,11 +50,29 @@ function defaultName(filename) {
   );
 }
 
-/** Laddar upp flera PDF:er, en i taget, med status per fil. */
+/** Kort resultattext för en färdig igenkänning. */
+function resultText(r) {
+  const n = r.tasks.length;
+  if (!n) {
+    return r.extraktion.textlagerSaknas
+      ? 'Sparad. PDF:en verkar inskannad – markera själv eller prova AI.'
+      : 'Sparad. Inga uppgifter hittades – markera själv eller prova AI.';
+  }
+  const sum = r.extraktion.sammanfattning?.summaPoang;
+  let t = `${plural(n, 'uppgift', 'uppgifter')} hittade${sum ? ` · ${fmtPoints(sum)} p` : ''}`;
+  if (r.extraktion.forslag) t += ' · behöver koll';
+  return t;
+}
+
+/**
+ * Laddar upp flera PDF:er, en i taget, med status per fil. Varje tenta
+ * sparas först och analyseras sedan med textigenkänningen (lokalt, gratis).
+ * Laddas en enda fil upp öppnas granskningen direkt när den är klar.
+ */
 export async function uploadFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
-  const items = files.map((f) => ({ id: db.uid(), name: f.name, size: f.size, state: 'waiting', text: 'Väntar…', file: f }));
+  const items = files.map((f) => ({ id: db.uid(), name: f.name, size: f.size, state: 'waiting', step: null, text: 'Väntar…', file: f }));
   uploads.unshift(...items);
   notifyUploads();
 
@@ -59,7 +81,8 @@ export async function uploadFiles(fileList) {
 
   for (const item of items) {
     item.state = 'working';
-    item.text = item.size > LARGE_PDF_BYTES ? `Stor fil (${fmtBytes(item.size)}) – det kan ta en stund…` : 'Läser in…';
+    item.step = 'read';
+    item.text = item.size > LARGE_PDF_BYTES ? `Stor fil (${fmtBytes(item.size)}) – det kan ta en stund.` : '';
     notifyUploads();
     try {
       const f = item.file;
@@ -95,9 +118,24 @@ export async function uploadFiles(fileList) {
       if (Array.isArray(settings.valdaTentor)) {
         await db.saveSettings({ valdaTentor: [...settings.valdaTentor, exam.id] });
       }
-      item.state = 'done';
       item.examId = exam.id;
-      item.text = `Klar · ${plural(info.antalSidor, 'sida', 'sidor')}`;
+      try {
+        const r = await recognizeAndSave(exam.id, {
+          onStep: (step) => {
+            item.step = step;
+            notifyUploads();
+          },
+        });
+        item.state = 'done';
+        item.step = 'done';
+        item.found = r.tasks.length;
+        item.text = resultText(r);
+      } catch (err) {
+        console.warn('Igenkänningen misslyckades:', item.name, err);
+        item.state = 'warn';
+        item.found = 0;
+        item.text = 'Tentan är sparad, men uppgifterna kunde inte hittas automatiskt. Markera dem själv eller prova AI.';
+      }
     } catch (err) {
       console.warn('Uppladdning misslyckades:', item.name, err);
       item.state = 'error';
@@ -108,11 +146,16 @@ export async function uploadFiles(fileList) {
     item.file = null; // släpp referensen
     notifyUploads();
   }
+  // En enda fil: gå direkt till granskningen (om man fortfarande är på startsidan).
+  const only = items.length === 1 ? items[0] : null;
+  if (only?.examId && (only.state === 'done' || only.state === 'warn') && /^#?\/?$/.test(location.hash)) {
+    navigate(`#/granska/${only.examId}`);
+  }
 }
 
 function clearFinishedUploads() {
   for (let i = uploads.length - 1; i >= 0; i--) {
-    if (uploads[i].state === 'done' || uploads[i].state === 'error') uploads.splice(i, 1);
+    if (['done', 'warn', 'error'].includes(uploads[i].state)) uploads.splice(i, 1);
   }
   notifyUploads();
 }
@@ -144,11 +187,12 @@ export async function renderLibrary(root) {
 
   async function refresh() {
     const seq = ++renderSeq;
-    const [exams, tasks, settings, log] = await Promise.all([
+    const [exams, tasks, settings, log, premium] = await Promise.all([
       db.listExams(),
       db.listTasks(),
       db.getSettings(),
       db.listLog(),
+      hasApiKey(),
     ]);
     if (destroyed || seq !== renderSeq) return;
     const activeEl = document.activeElement;
@@ -169,7 +213,7 @@ export async function renderLibrary(root) {
       // Översikten visas först när det finns något att plugga – annars är
       // kortets "Markera uppgifter" det enda tydliga valet.
       if (tasks.some(hasRegions)) view.append(overview(exams, selected, selectedTasks, settings, log));
-      view.append(examList(exams, tasksByExam, settings));
+      view.append(examList(exams, tasksByExam, settings, premium));
       view.append(uploadSection(false));
       updateBackupBanner(exams, settings);
     }
@@ -301,7 +345,7 @@ export async function renderLibrary(root) {
     );
   }
 
-  function examList(exams, tasksByExam, settings) {
+  function examList(exams, tasksByExam, settings, premium) {
     return h(
       'section',
       { class: 'exams', 'aria-labelledby': 'exams-title' },
@@ -309,12 +353,12 @@ export async function renderLibrary(root) {
       h(
         'ul',
         { class: 'exam-list' },
-        exams.map((exam) => examCard(exam, (tasksByExam.get(exam.id) || []).filter(hasRegions), settings)),
+        exams.map((exam) => examCard(exam, (tasksByExam.get(exam.id) || []).filter(hasRegions), settings, premium)),
       ),
     );
   }
 
-  function examCard(exam, tasks, settings) {
+  function examCard(exam, tasks, settings, premium) {
     const p = progress(tasks, settings.viktaEfterPoang);
     const hasTasks = tasks.length > 0;
     const moreBtn = h(
@@ -331,7 +375,12 @@ export async function renderLibrary(root) {
       openMenu(
         moreBtn,
         [
-          { label: 'Markera uppgifter', icon: 'marquee', onSelect: () => navigate(`#/markera/${exam.id}`) },
+          { label: 'Granska uppgifter', icon: 'list', onSelect: () => navigate(`#/granska/${exam.id}`) },
+          { label: 'Markera manuellt', icon: 'marquee', onSelect: () => navigate(`#/markera/${exam.id}`) },
+          { label: 'Analysera med AI', icon: 'sparkles', badge: premium ? null : 'Premium', onSelect: () => runAiAnalysis(exam.id) },
+          { label: 'Hitta uppgifter automatiskt', icon: 'scan', onSelect: () => rerunTextRecognition(exam.id) },
+          exam.facitPdf ? null : { label: 'Lägg till facit-PDF', icon: 'fileText', onSelect: () => addFacitPdf(exam.id) },
+          { separator: true },
           { label: 'Byt namn', icon: 'edit', onSelect: () => renameExam(exam) },
           { label: 'Nollställ framsteg', icon: 'refresh', disabled: !hasTasks, onSelect: () => resetExam(exam, tasks) },
           { separator: true },
@@ -477,22 +526,28 @@ export async function renderLibrary(root) {
             'span',
             { class: 'upload-item-icon' },
             u.state === 'done'
-              ? icon('checkCircle', { size: 18 })
-              : u.state === 'error'
-                ? icon('alert', { size: 18 })
-                : icon('spinner', { size: 18, cls: u.state === 'working' ? 'spin' : '' }),
+              ? icon('checkCircle', { size: 20 })
+              : u.state === 'error' || u.state === 'warn'
+                ? icon('alert', { size: 20 })
+                : icon('spinner', { size: 20, cls: u.state === 'working' ? 'spin' : '' }),
           ),
           h(
             'div',
             { class: 'upload-item-body' },
             h('p', { class: 'upload-item-name' }, u.name),
-            h('p', { class: 'upload-item-text' }, u.text),
+            u.state === 'working' ? stepper(STEG, u.step) : null,
+            u.state === 'waiting' ? h('p', { class: 'upload-item-text' }, 'Väntar på sin tur') : null,
+            u.text ? h('p', { class: 'upload-item-text' }, u.text) : null,
           ),
-          u.state === 'done' && u.examId
+          (u.state === 'done' || u.state === 'warn') && u.examId
             ? h(
                 'button',
-                { type: 'button', class: 'btn btn-sm btn-quiet', onclick: () => navigate(`#/markera/${u.examId}`) },
-                'Markera uppgifter',
+                {
+                  type: 'button',
+                  class: 'btn btn-sm btn-secondary',
+                  onclick: () => navigate(`#/granska/${u.examId}`),
+                },
+                u.found ? 'Granska' : 'Välj hur',
               )
             : null,
         ),

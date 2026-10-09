@@ -46,7 +46,11 @@ const MIN_DRAW_PX = 12; // mindre än så räknas som ett tryck, inte en ruta
 const clone = (x) => structuredClone(x);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-export async function renderMarking(root, examId) {
+/**
+ * @param {string} examId
+ * @param {string|null} focusTaskId öppna med den här uppgiften vald (från granskningen)
+ */
+export async function renderMarking(root, examId, focusTaskId = null) {
   const exam = await db.getExam(examId);
   if (!exam) {
     root.append(notFound());
@@ -71,6 +75,7 @@ export async function renderMarking(root, examId) {
   };
   let destroyed = false;
   const maxPageW = Math.max(...exam.sidor.map((s) => s.w));
+  const backHash = focusTaskId ? `#/granska/${exam.id}` : '#/';
 
   /* ------------------------------------------------------------------ */
   /* DOM                                                                */
@@ -89,7 +94,7 @@ export async function renderMarking(root, examId) {
   const topbar = h(
     'header',
     { class: 'topbar' },
-    iconBtn('back', 'Tillbaka till biblioteket', () => navigate('#/')),
+    iconBtn('back', focusTaskId ? 'Tillbaka till granskningen' : 'Tillbaka till startsidan', () => navigate(backHash)),
     h('div', { class: 'topbar-text' }, titleEl, summaryEl),
     h(
       'div',
@@ -389,6 +394,14 @@ export async function renderMarking(root, examId) {
 
   function renumber() {
     S.tasks.forEach((t, i) => (t.ordning = i));
+  }
+
+  /** En uppgift som du själv har justerat räknas som kontrollerad. */
+  function touched(task) {
+    if (task && task.sakerhet === db.SAKERHET.LAG) {
+      task.sakerhet = db.SAKERHET.MANUELL;
+      task.anmarkningar = [];
+    }
   }
 
   /** Uppgiften som ligger närmast före positionen i dokumentet. */
@@ -755,6 +768,7 @@ export async function renderMarking(root, examId) {
       case 'move':
       case 'resize':
         if (d.moved && JSON.stringify(d.orig) !== JSON.stringify(selRegion())) {
+          touched(taskById(S.sel.taskId));
           pushUndo(d.type === 'move' ? 'Flytta område' : 'Ändra storlek', d.before);
           refreshAll();
           save();
@@ -841,6 +855,7 @@ export async function renderMarking(root, examId) {
       if (!t) return;
       const entry = mutate(kind === TASK ? 'Lägg till område' : 'Lägg till facit', () => {
         t[kind].push(region);
+        touched(t);
         S.sel = { taskId, kind, index: t[kind].length - 1 };
       });
       openEditPanel();
@@ -1170,7 +1185,10 @@ export async function renderMarking(root, examId) {
         }
         if (v !== t.etikett) {
           const id = t.id;
-          mutate('Byt etikett', () => (taskById(id).etikett = v));
+          mutate('Byt etikett', () => {
+            taskById(id).etikett = v;
+            touched(taskById(id));
+          });
           refreshPanelHead();
         }
       };
@@ -1185,7 +1203,10 @@ export async function renderMarking(root, examId) {
         error.hidden = true;
         if (v !== t.poang) {
           const id = t.id;
-          mutate('Ändra poäng', () => (taskById(id).poang = v));
+          mutate('Ändra poäng', () => {
+            taskById(id).poang = v;
+            touched(taskById(id));
+          });
         }
       };
       labelInput.addEventListener('change', commitLabel);
@@ -1560,10 +1581,13 @@ export async function renderMarking(root, examId) {
       ],
       buttons: [
         { label: 'Fortsätt markera', value: null, variant: 'secondary' },
+        focusTaskId ? { label: 'Tillbaka till granskningen', value: 'review', variant: 'secondary' } : null,
         { label: 'Plugga nu', value: 'study', variant: 'primary' },
-      ],
+      ].filter(Boolean),
     });
-    if ((await result) === 'study') navigate(`#/plugga/${exam.id}`);
+    const choice = await result;
+    if (choice === 'study') navigate(`#/plugga/${exam.id}`);
+    if (choice === 'review') navigate(backHash);
   }
 
   /* ------------------------------------------------------------------ */
@@ -1637,6 +1661,10 @@ export async function renderMarking(root, examId) {
   syncSidebarMode();
   updatePageIndicator();
   titleEl.focus({ preventScroll: true });
+  if (focusTaskId) {
+    const t = taskById(focusTaskId);
+    if (t?.regions.length) requestAnimationFrame(() => !destroyed && select(t.id, TASK, 0, { scroll: true }));
+  }
 
   return {
     destroy() {
@@ -1666,7 +1694,7 @@ function notFound() {
       { class: 'empty-state' },
       h('h1', { tabindex: '-1' }, 'Tentan hittades inte'),
       h('p', null, 'Den kan ha tagits bort, eller så finns den på en annan enhet.'),
-      h('button', { type: 'button', class: 'btn btn-primary', onclick: () => navigate('#/') }, 'Till biblioteket'),
+      h('button', { type: 'button', class: 'btn btn-primary', onclick: () => navigate('#/') }, 'Till startsidan'),
     ),
   );
 }

@@ -245,6 +245,30 @@ export async function renderPage(examId, pageNum, canvas, cssWidth, signal) {
   return true;
 }
 
+/**
+ * Renderar en hel sida till pixeldata (för autobeskärning av klipp).
+ * @param {'tenta'|'facit'} which
+ * @returns {Promise<{data:Uint8ClampedArray,width:number,height:number}>}
+ */
+export async function renderPagePixels(examId, pageNum, which = 'tenta', targetHeight = 1400) {
+  const doc = await getDocument(examId, which);
+  const page = await doc.getPage(pageNum);
+  const base = page.getViewport({ scale: 1 });
+  const scale = capScale(targetHeight / base.height, base.width, base.height);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.floor(viewport.width));
+  canvas.height = Math.max(1, Math.floor(viewport.height));
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff'; // papperets färg (bilddata, inte UI)
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport, background: 'rgba(0,0,0,0)' }).promise;
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  canvas.width = canvas.height = 0;
+  page.cleanup();
+  return { data: img.data, width: img.width, height: img.height };
+}
+
 /* ------------------------------------------------------------------ */
 /* Uppgiftsbilder (utsnitt) med LRU-cache                              */
 /* ------------------------------------------------------------------ */
