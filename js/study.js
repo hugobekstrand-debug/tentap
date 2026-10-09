@@ -75,7 +75,7 @@ export async function renderStudy(root, examIdParam = null) {
   /** Bildupplösning: skarpt på enheten, med marginal för zoom. */
   const stageGuess = Math.min(window.innerWidth, 1100);
   const refPageW = Math.max(...exams.map((e) => e.sidor[0]?.w || 595));
-  const basePxPerPt = Math.min(6, Math.max(2.5, (Math.max(2, deviceScale()) * stageGuess * 1.5) / refPageW));
+  const basePxPerPt = Math.min(6, Math.max(2.5 * Math.max(1, deviceScale()), (Math.max(2, deviceScale()) * stageGuess * 1.5) / refPageW));
 
   /* ------------------------------------------------------------------ */
   /* Kö                                                                  */
@@ -179,7 +179,8 @@ export async function renderStudy(root, examIdParam = null) {
   function baseWidth() {
     const pad = mq.narrow() ? 24 : 48;
     const avail = Math.max(240, stage.clientWidth - pad);
-    return Math.min(avail, sheetMaxPt * 1.6, 1100);
+    // Så stor som möjligt: fyll bredden, men högst 2,4 CSS-pixlar per PDF-punkt (läsbar, inte uppblåst).
+    return Math.min(avail, sheetMaxPt * 2.4, 1100);
   }
 
   function applyWidth() {
@@ -789,8 +790,7 @@ export async function renderStudy(root, examIdParam = null) {
   if (last && S.queue.includes(last)) S.queue = [last, ...S.queue.filter((x) => x !== last)];
   updateProgress();
   goToQueueHead();
-  // Fokus på bildytan (piltangenter/mellanslag skrollar), utan att rita en fokusram vid start.
-  if (!S.celebrating) stage.focus({ preventScroll: true, focusVisible: false });
+  // Kortkommandona lyssnar på hela dokumentet; bildytan nås med Tab för att skrolla med tangentbordet.
 
   return {
     destroy() {
